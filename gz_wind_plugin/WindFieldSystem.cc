@@ -16,6 +16,7 @@
 #include <string>
 #include <cmath>
 #include <limits>
+#include <algorithm>
 
 using namespace gz;
 using namespace sim;
@@ -137,6 +138,15 @@ private:
         std::ifstream file(path);
         if (!file.is_open()) return false;
 
+        double minEast = std::numeric_limits<double>::max();
+        double maxEast = std::numeric_limits<double>::lowest();
+        double minNorth = std::numeric_limits<double>::max();
+        double maxNorth = std::numeric_limits<double>::lowest();
+        double minHeight = std::numeric_limits<double>::max();
+        double maxHeight = std::numeric_limits<double>::lowest();
+        size_t maxIx = 0, maxIy = 0, maxIz = 0;
+        bool seenIx = false, seenIy = false, seenIz = false;
+
         std::string line;
         // 跳过 CSV 头部注释和标题行
         // 根据 Python 脚本：前3行是注释，第4行是标题，或者包含 '#'
@@ -156,20 +166,70 @@ private:
             WindPoint p;
             try {
                 // Gazebo X = East, Gazebo Y = North
-                p.east = std::stof(row[3]);
-                p.north = std::stof(row[4]);
+                const int iz = std::stoi(row[0]);
+                const int iy = std::stoi(row[1]);
+                const int ix = std::stoi(row[2]);
+
+                p.east = std::stod(row[3]);
+                p.north = std::stod(row[4]);
                 // 使用 height_agl (相对地面高度) 还是 height (海拔)?
                 // 如果 Gazebo 地面在 Z=0，建议用 height_agl。这里取 height_agl (index 7)
-                p.height = std::stof(row[7]); 
+                p.height = std::stod(row[7]); 
                 
-                p.u = std::stof(row[8]);
-                p.v = std::stof(row[9]);
-                p.w = std::stof(row[10]);
+                p.u = std::stod(row[8]);
+                p.v = std::stod(row[9]);
+                p.w = std::stod(row[10]);
                 
                 windData.push_back(p);
+
+                minEast = std::min(minEast, p.east);
+                maxEast = std::max(maxEast, p.east);
+                minNorth = std::min(minNorth, p.north);
+                maxNorth = std::max(maxNorth, p.north);
+                minHeight = std::min(minHeight, p.height);
+                maxHeight = std::max(maxHeight, p.height);
+
+                if (ix >= 0) {
+                    maxIx = std::max(maxIx, static_cast<size_t>(ix));
+                    seenIx = true;
+                }
+                if (iy >= 0) {
+                    maxIy = std::max(maxIy, static_cast<size_t>(iy));
+                    seenIy = true;
+                }
+                if (iz >= 0) {
+                    maxIz = std::max(maxIz, static_cast<size_t>(iz));
+                    seenIz = true;
+                }
             } catch (...) { continue; }
         }
-        return !windData.empty();
+        if (windData.empty()) return false;
+
+        this->bboxMin = math::Vector3d(minEast, minNorth, minHeight);
+        this->bboxMax = math::Vector3d(maxEast, maxNorth, maxHeight);
+
+        auto computePadding = [](double span, size_t count, double minPad)
+        {
+            if (count > 1 && span > 0.0) {
+                double spacing = span / static_cast<double>(count - 1);
+                return std::max(0.5 * spacing, minPad);
+            }
+            return minPad;
+        };
+
+        constexpr double kHorizontalMinPad = 100.0;
+        constexpr double kVerticalMinPad = 50.0;
+
+        size_t nx = seenIx ? maxIx + 1 : 0;
+        size_t ny = seenIy ? maxIy + 1 : 0;
+        size_t nz = seenIz ? maxIz + 1 : 0;
+
+        this->bboxPadding = math::Vector3d(
+            computePadding(maxEast - minEast, nx, kHorizontalMinPad),
+            computePadding(maxNorth - minNorth, ny, kHorizontalMinPad),
+            computePadding(maxHeight - minHeight, nz, kVerticalMinPad));
+        this->hasBounds = true;
+        return true;
     }
 
     // 简单的最近邻查找 (Nearest Neighbor)
@@ -177,6 +237,7 @@ private:
     math::Vector3d GetWindAt(const math::Vector3d &pos)
     {
         if (windData.empty()) return math::Vector3d::Zero;
+        if (!InsideBounds(pos)) return math::Vector3d::Zero;
 
         double minDistSq = std::numeric_limits<double>::max();
         const WindPoint* closest = nullptr;
@@ -196,11 +257,18 @@ private:
             }
         }
 
-        // 如果距离太远（例如超出了数据覆盖范围），返回 0 风
-        if (minDistSq > 500.0 * 500.0) return math::Vector3d::Zero;
-
         if (closest) return math::Vector3d(closest->u, closest->v, closest->w);
         return math::Vector3d::Zero;
+    }
+
+    bool InsideBounds(const math::Vector3d &pos) const
+    {
+        if (!this->hasBounds) return true;
+        const math::Vector3d min = this->bboxMin - this->bboxPadding;
+        const math::Vector3d max = this->bboxMax + this->bboxPadding;
+        return (pos.X() >= min.X() && pos.X() <= max.X() &&
+                pos.Y() >= min.Y() && pos.Y() <= max.Y() &&
+                pos.Z() >= min.Z() && pos.Z() <= max.Z());
     }
 
     Model model;
@@ -208,6 +276,10 @@ private:
     std::string targetLinkName;
     double dragCoeff = 1.0; // 默认阻力系数
     std::vector<WindPoint> windData;
+    math::Vector3d bboxMin{0, 0, 0};
+    math::Vector3d bboxMax{0, 0, 0};
+    math::Vector3d bboxPadding{0, 0, 0};
+    bool hasBounds{false};
 };
 
 GZ_ADD_PLUGIN(WindFieldSystem,
