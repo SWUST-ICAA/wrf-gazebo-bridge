@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -176,6 +177,48 @@ def summarize_field(field: WindFieldData, args: argparse.Namespace) -> Dict:
     }
 
 
+def export_csv(path: Path, field: WindFieldData) -> None:
+    nx, ny, nz = field.shape
+    with path.open("w", newline="") as csv_file:
+        csv_file.write("# wind_field_csv,v1\n")
+        csv_file.write(f"# timestamp={field.timestamp.isoformat()}\n")
+        csv_file.write(f"# origin_lat={field.lat0},origin_lon={field.lon0}\n")
+        writer = csv.writer(csv_file)
+        writer.writerow(
+            [
+                "iz",
+                "iy",
+                "ix",
+                "east_m",
+                "north_m",
+                "terrain_m",
+                "height_m",
+                "height_agl_m",
+                "u_ms",
+                "v_ms",
+                "w_ms",
+            ]
+        )
+        for iz in range(nz):
+            for iy in range(ny):
+                for ix in range(nx):
+                    writer.writerow(
+                        [
+                            iz,
+                            iy,
+                            ix,
+                            float(field.east_m[iy, ix]),
+                            float(field.north_m[iy, ix]),
+                            float(field.terrain_m[iy, ix]),
+                            float(field.heights_m[iz, iy, ix]),
+                            float(field.heights_agl_m[iz, iy, ix]),
+                            float(field.u_ms[iz, iy, ix]),
+                            float(field.v_ms[iz, iy, ix]),
+                            float(field.w_ms[iz, iy, ix]),
+                        ]
+                    )
+
+
 def main() -> None:
     args = parse_args()
     args.wrf_path = Path(args.wrf_path)
@@ -188,20 +231,10 @@ def main() -> None:
 
     summary = summarize_field(field, args)
     time_suffix = f"{args.time_index:02d}"
-    data_path = args.output_dir / f"wind_field_t{time_suffix}.npz"
+    data_path = args.output_dir / f"wind_field_t{time_suffix}.csv"
     meta_path = args.output_dir / f"wind_field_t{time_suffix}.json"
 
-    np.savez_compressed(
-        data_path,
-        east_m=field.east_m,
-        north_m=field.north_m,
-        terrain_m=field.terrain_m,
-        heights_m=field.heights_m,
-        heights_agl_m=field.heights_agl_m,
-        u_ms=field.u_ms,
-        v_ms=field.v_ms,
-        w_ms=field.w_ms,
-    )
+    export_csv(data_path, field)
     meta_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
     print(f"Exported wind field for time-step {args.time_index} -> {data_path}")
