@@ -1,2 +1,3 @@
 wrfout_data/*
 wrf_gazebo_bridge/__pycache__
+wind_gz_plugin/build
