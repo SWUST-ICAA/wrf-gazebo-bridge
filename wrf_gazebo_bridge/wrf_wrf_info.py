@@ -95,6 +95,49 @@ def _height_info(nc) -> Tuple[float, float]:
     return z_min, z_max
 
 
+def _center_altitude(
+    nc, lat_center: float, lon_center: float
+) -> Tuple[float | None, float | None]:
+    """计算经纬度范围中心点附近的地形高度和最低质量面高度（米）。
+
+    返回:
+      (terrain_alt, lowest_mass_level_alt)
+      若缺少对应变量，则为 None。
+    """
+    import numpy as np  # type: ignore
+
+    xlat = nc.variables["XLAT"][0, :, :]
+    xlon = nc.variables["XLONG"][0, :, :]
+
+    # 找到最接近中心经纬度的网格点索引
+    lat0_rad = math.radians(lat_center)
+    dlat = xlat - lat_center
+    dlon = (xlon - lon_center) * math.cos(lat0_rad)
+    dist2 = dlat * dlat + dlon * dlon
+
+    idx_flat = int(np.argmin(dist2))
+    j, i = np.unravel_index(idx_flat, xlat.shape)
+
+    terrain_alt: float | None = None
+    lowest_mass_alt: float | None = None
+
+    # 地形高度 HGT（如果有）
+    if "HGT" in nc.variables:
+        hgt = nc.variables["HGT"][0, :, :]
+        terrain_alt = float(hgt[j, i])
+
+    # 最低质量面高度（PH/PHB，如果有）
+    if "PH" in nc.variables and "PHB" in nc.variables:
+        ph = nc.variables["PH"][:]  # (Time, bottom_top_stag, ny, nx)
+        phb = nc.variables["PHB"][:]
+        g = 9.81
+        z_stag = (ph + phb) / g
+        z_mass = 0.5 * (z_stag[:, :-1, :, :] + z_stag[:, 1:, :, :])
+        lowest_mass_alt = float(z_mass[0, 0, j, i])
+
+    return terrain_alt, lowest_mass_alt
+
+
 def _wind_stats(nc) -> Tuple[float, float, float]:
     """统计风速的最小/最大/平均值（m/s）。优先使用 3D U/V/W。"""
     import numpy as np  # type: ignore
@@ -148,6 +191,11 @@ def summarize_wrf(path: str) -> None:
     # 高度范围
     z_min, z_max = _height_info(nc)
 
+    # 中心经纬度附近的地形/最低层高度
+    center_terrain_alt, center_lowest_mass_alt = _center_altitude(
+        nc, lat_center, lon_center
+    )
+
     # 风速统计
     v_min, v_max, v_mean = _wind_stats(nc)
 
@@ -172,6 +220,18 @@ def summarize_wrf(path: str) -> None:
         print("  未找到 PH/PHB 变量，无法计算高度范围")
     else:
         print(f"  高度: {z_min:.1f} m  ~  {z_max:.1f} m")
+    print()
+
+    print("经纬度范围中心的高度信息（单位：米）:")
+    if center_terrain_alt is not None:
+        print(f"  地形高度 HGT: {center_terrain_alt:.1f} m")
+    else:
+        print("  未找到 HGT 变量，无法给出地形高度")
+
+    if center_lowest_mass_alt is not None:
+        print(f"  最低质量面高度 (PH/PHB): {center_lowest_mass_alt:.1f} m")
+    else:
+        print("  未找到 PH/PHB 变量，无法给出最低质量面高度")
     print()
 
     print("风速统计（m/s）:")
@@ -206,4 +266,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-
