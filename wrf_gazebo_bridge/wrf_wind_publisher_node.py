@@ -139,22 +139,49 @@ class WrfWindPublisher(Node):
 
     # ---- 插值工具函数 ----
 
-    def _find_nearest_horizontal_index(self, lat: float, lon: float) -> Optional[Tuple[int, int]]:
-        """Return nearest (j, i) index on the WRF horizontal grid, or None if outside bounds."""
+    def _find_horizontal_neighbors(
+        self, lat: float, lon: float, k_neighbors: int = 4
+    ) -> Optional[Tuple["self._np.ndarray", "self._np.ndarray", "self._np.ndarray"]]:
+        """在水平网格上找到若干个邻近网格点，并给出反距离权重."""
         np = self._np
 
-        if lat < self._lat_min or lat > self._lat_max or lon < self._lon_min or lon > self._lon_max:
+        if (
+            lat < self._lat_min
+            or lat > self._lat_max
+            or lon < self._lon_min
+            or lon > self._lon_max
+        ):
             return None
 
-        # 简单最近邻搜索；网格不大的情况下开销可以接受
-        # 使用粗略的经纬度距离（未考虑投影，框架示例用）
+        # 先计算到所有网格点的粗略距离（未考虑投影，只作为插值权重用）
         dlat = self._lat_flat - lat
         dlon = (self._lon_flat - lon) * math.cos(math.radians(lat))
         dist2 = dlat * dlat + dlon * dlon
-        idx = int(np.argmin(dist2))
-        j = int(self._j_flat[idx])
-        i = int(self._i_flat[idx])
-        return j, i
+        # 若恰好落在某个网格点上，则直接使用该点
+        idx_min = int(np.argmin(dist2))
+        min_d2 = float(dist2[idx_min])
+        if min_d2 < 1e-12:
+            j = int(self._j_flat[idx_min])
+            i = int(self._i_flat[idx_min])
+            return (
+                np.array([j], dtype=int),
+                np.array([i], dtype=int),
+                np.array([1.0], dtype=float),
+            )
+
+        # 选取若干个最近邻，用反距离平方作为权重
+        k = int(min(k_neighbors, dist2.size))
+        # argpartition 比完整排序更快
+        idxs = np.argpartition(dist2, k - 1)[:k]
+        d2_sel = dist2[idxs]
+        eps = 1e-12
+        inv_d2 = 1.0 / (d2_sel + eps)
+        weights = inv_d2 / np.sum(inv_d2)
+
+        js = self._j_flat[idxs].astype(int)
+        is_ = self._i_flat[idxs].astype(int)
+        ws = weights.astype(float)
+        return js, is_, ws
 
     def _find_time_indices(self, now: Time) -> Tuple[int, int, float]:
         """Map ROS 时间到 WRF 时间步索引 (k0, k1, alpha)."""
@@ -230,25 +257,40 @@ class WrfWindPublisher(Node):
     def _wind_at_single_time(
         self, k_time: int, lat: float, lon: float, alt: float
     ) -> Tuple[float, float, float]:
-        """给定 WRF 时间步索引和位置，计算该时刻风矢量。"""
-        idx = self._find_nearest_horizontal_index(lat, lon)
-        if idx is None:
+        """给定 WRF 时间步索引和位置，计算该时刻风矢量（含水平插值）。"""
+        neighbors = self._find_horizontal_neighbors(lat, lon)
+        if neighbors is None:
             return self.default_wind
 
-        j, i = idx
+        js, is_, ws = neighbors
 
         if self.use_3d_wind:
-            z_column = self._z[k_time, :, j, i]
-            u_col = self._u[k_time, :, j, i]
-            v_col = self._v[k_time, :, j, i]
-            w_col = self._w[k_time, :, j, i]
-            return self._interpolate_vertical(z_column, u_col, v_col, w_col, alt)
+            # 先在每个水平方向邻点的垂直方向做插值，再对这些结果做水平加权平均
+            u_sum = 0.0
+            v_sum = 0.0
+            w_sum = 0.0
+            for j, i, w_h in zip(js, is_, ws):
+                z_column = self._z[k_time, :, j, i]
+                u_col = self._u[k_time, :, j, i]
+                v_col = self._v[k_time, :, j, i]
+                w_col = self._w[k_time, :, j, i]
+                u_loc, v_loc, w_loc = self._interpolate_vertical(
+                    z_column, u_col, v_col, w_col, alt
+                )
+                u_sum += w_h * u_loc
+                v_sum += w_h * v_loc
+                w_sum += w_h * w_loc
+            return float(u_sum), float(v_sum), float(w_sum)
 
-        # 只使用 10m 风，忽略高度
-        u = float(self._u10[k_time, j, i])
-        v = float(self._v10[k_time, j, i])
-        w = 0.0
-        return u, v, w
+        # 只使用 10m 风：先在水平上做反距离权重，再忽略高度
+        u_sum = 0.0
+        v_sum = 0.0
+        for j, i, w_h in zip(js, is_, ws):
+            u_loc = float(self._u10[k_time, j, i])
+            v_loc = float(self._v10[k_time, j, i])
+            u_sum += w_h * u_loc
+            v_sum += w_h * v_loc
+        return float(u_sum), float(v_sum), 0.0
 
     def _compute_wind(self, now: Time, lat: float, lon: float, alt: float) -> Tuple[float, float, float]:
         """根据当前 ROS 时间与位置计算风矢量（进行时间插值）。"""
@@ -301,4 +343,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

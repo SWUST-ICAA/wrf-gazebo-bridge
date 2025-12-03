@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>wrf_gazebo_bridge</name>
-  <version>0.0.1</version>
+  <version>1.0.0</version>
   <description>Bridge WRF netCDF wind field data into ROS 2 topics for use in simulation (e.g. Gazebo).</description>
 
-  <maintainer email="you@example.com">Your Name</maintainer>
+  <maintainer email="nanwan2004@126.com">Nanwan</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
