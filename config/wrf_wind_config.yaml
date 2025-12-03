@@ -4,7 +4,7 @@ wrf_wind_publisher:
     wrf_file_path: "/home/nanwan/Work_directory/wrfTOgazebo_ws/src/wrf-gazebo-bridge/wrfout_data/wrfout_d01_2022-07-01_00_00_00"
 
     # 订阅位置的话题，消息类型为 sensor_msgs/msg/NavSatFix
-    position_topic: "/gps/fix"
+    position_topic: "/robot_gpsfix"
 
     # 发布风矢量的话题，消息类型为 geometry_msgs/msg/Vector3Stamped
     wind_topic: "/wrf_wind"
