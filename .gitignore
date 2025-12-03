@@ -1,1 +1,2 @@
-wrfout_data
+wrfout_data/*
+wrf_gazebo_bridge/__pycache__

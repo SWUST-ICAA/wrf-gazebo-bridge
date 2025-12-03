@@ -1,0 +1,26 @@
+wrf_wind_publisher:
+  ros__parameters:
+    # wrfout.nc 文件路径（相对于工作空间或绝对路径）
+    wrf_file_path: "/home/nanwan/Work_directory/wrfTOgazebo_ws/src/wrf-gazebo-bridge/wrfout_data/wrfout_d01_2022-07-01_00_00_00"
+
+    # 订阅位置的话题，消息类型为 sensor_msgs/msg/NavSatFix
+    position_topic: "/gps/fix"
+
+    # 发布风矢量的话题，消息类型为 geometry_msgs/msg/Vector3Stamped
+    wind_topic: "/wrf_wind"
+
+    # 是否使用 3D 风场 U/V/W，若为 false 则只用 U10/V10（10m 风），垂直速度为 0
+    use_3d_wind: true
+
+    # 时间插值方式："linear" 线性插值，"nearest" 最近邻时间步
+    time_interpolation: "linear"
+
+    # ROS 时间与 WRF 时间轴的偏移，单位秒。
+    # 节点启动时对应 wrf 的第 0 个时间步，如需对齐真实时间可自行调整。
+    time_offset_seconds: 0.0
+
+    # 超出水平范围，或垂直插值失败时的默认风场（m/s）
+    default_wind_x: 0.0
+    default_wind_y: 0.0
+    default_wind_z: 0.0
+
