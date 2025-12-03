@@ -1,6 +1,7 @@
 #include "WindGzPlugin.hh"
 
 #include <chrono>
+#include <cmath>
 
 #include <gz/math/Helpers.hh>
 #include <gz/math/Pose3.hh>
@@ -49,8 +50,12 @@ struct WindGzPlugin::Data
   // 阻力参数
   double fluidDensity{1.225};   // kg/m^3
   double referenceArea{1.0};    // m^2
-  double linearCd{1.0};         // 平动阻力系数
-  double angularCd{1.0};        // 转动阻力系数
+  double linearCd{1.0};         // 平动阻力系数（无量纲）
+  double angularCd{1.0};        // 转动阻力系数（无量纲）
+
+  // 力 / 力矩的安全上限，避免极端参数导致仿真爆炸
+  double maxForce{1e3};         // N
+  double maxTorque{1e3};        // N·m
 };
 
 //////////////////////////////////////////////////
@@ -124,6 +129,16 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     this->dataPtr->angularCd = sdf->Get<double>("angular_drag_coefficient");
   }
 
+  // 可选：限制最大力和力矩，防止过大系数导致仿真发散
+  if (sdf->HasElement("max_force"))
+  {
+    this->dataPtr->maxForce = sdf->Get<double>("max_force");
+  }
+  if (sdf->HasElement("max_torque"))
+  {
+    this->dataPtr->maxTorque = sdf->Get<double>("max_torque");
+  }
+
   // 获取 link 实体
   this->dataPtr->linkEntity =
     this->dataPtr->model.LinkByName(_ecm, this->dataPtr->linkName);
@@ -135,9 +150,11 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     return;
   }
 
-  // 可选：使能速度检查（当前 Gazebo 版本可不调用）
-  // gz::sim::Link link(this->dataPtr->linkEntity);
-  // link.EnableVelocityChecks(_ecm, true);
+  // 使能速度检查，确保 WorldLinearVelocity / WorldAngularVelocity 组件存在
+  {
+    gz::sim::Link link(this->dataPtr->linkEntity);
+    link.EnableVelocityChecks(_ecm, true);
+  }
 
   // 初始化 ROS2
   if (!rclcpp::ok())
@@ -202,12 +219,19 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
   auto velOpt = link.WorldLinearVelocity(_ecm);
   auto angVelOpt = link.WorldAngularVelocity(_ecm);
 
-  if (!poseOpt || !velOpt || !angVelOpt)
+  // 没有位姿则无法计算任何量，直接返回
+  if (!poseOpt)
     return;
 
   const auto &pose = *poseOpt;
-  const auto &velWorld = *velOpt;
-  const auto &angVelWorld = *angVelOpt;
+  // 速度相关用于计算阻力矩，没有的话就认为当前速度为 0，但仍然可以发布 GPS
+  gz::math::Vector3d velWorld(0, 0, 0);
+  if (velOpt)
+    velWorld = *velOpt;
+
+  gz::math::Vector3d angVelWorld(0, 0, 0);
+  if (angVelOpt)
+    angVelWorld = *angVelOpt;
 
   // 当前风场（世界坐标）
   gz::math::Vector3d windWorld(0, 0, 0);
@@ -244,6 +268,26 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
       this->dataPtr->referenceArea;
     torque = -kR * omegaMag * angVelWorld;
   }
+
+  // 对力和力矩做安全裁剪，避免过大数值引发物理引擎/ODE 崩溃
+  auto sanitizeVec = [](const gz::math::Vector3d &v, double maxMag) {
+    gz::math::Vector3d out = v;
+    if (!std::isfinite(out.X()) || !std::isfinite(out.Y()) || !std::isfinite(out.Z()))
+      return gz::math::Vector3d::Zero;
+
+    if (maxMag > 0.0)
+    {
+      const double mag = out.Length();
+      if (mag > maxMag && mag > 1e-6)
+      {
+        out *= (maxMag / mag);
+      }
+    }
+    return out;
+  };
+
+  force = sanitizeVec(force, this->dataPtr->maxForce);
+  torque = sanitizeVec(torque, this->dataPtr->maxTorque);
 
   // 把阻力作用到 link 上（世界坐标系下的力/矩）
   if (force != gz::math::Vector3d::Zero ||
