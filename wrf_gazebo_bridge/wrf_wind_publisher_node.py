@@ -222,15 +222,35 @@ class WrfWindPublisher(Node):
     def _interpolate_vertical(
         self, z_column: "self._np.ndarray", u_col, v_col, w_col, alt: float
     ) -> Tuple[float, float, float]:
-        """在单个垂直柱 (levels) 内按高度插值风速。"""
+        """在单个垂直柱 (levels) 内按高度插值风速。
+
+        处理策略：
+        - alt 在层间：做线性插值
+        - alt 低于最低层：使用最低层风速（贴地近似）
+        - alt 高于最高层：使用最高层风速
+        """
         np = self._np
 
         # z_column: (bottom_top,)
-        # 若高度超出范围，这里简单返回默认风场，可根据需要改为夹紧到边界
-        z_min = float(np.min(z_column))
-        z_max = float(np.max(z_column))
-        if alt <= z_min or alt >= z_max:
-            return self.default_wind
+        # 假设 z 随 level 单调递增
+        z0 = float(z_column[0])
+        zN = float(z_column[-1])
+
+        # 低于最低层：直接使用最低层
+        if alt <= z0:
+            return (
+                float(u_col[0]),
+                float(v_col[0]),
+                float(w_col[0]),
+            )
+
+        # 高于最高层：直接使用最高层
+        if alt >= zN:
+            return (
+                float(u_col[-1]),
+                float(v_col[-1]),
+                float(w_col[-1]),
+            )
 
         # 假设 z 随 level 单调，使用 searchsorted
         k1 = int(np.searchsorted(z_column, alt))
