@@ -171,6 +171,14 @@ When the model moves inside the WRF domain:
 - `/wrf_wind` will provide interpolated wind vectors at the current position
 - The model will experience translational and rotational aerodynamic drag
 
+The plugin only applies aerodynamic forces / torques when:
+
+- There is at least one active publisher on `/wrf_wind`, **and**
+- At least one wind message has been received.
+
+If no node is publishing `/wrf_wind`, the plugin will still publish `/robot_gpsfix`,
+but it will not apply any additional aerodynamic wrench to the model.
+
 ---
 
 ## Data Flow Overview
@@ -188,7 +196,10 @@ You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driv
 - If you only need aerodynamic forces / torques:
   1. Build and install the plugin as described above.
   2. Add the `<plugin>` block to your model SDF.
-  3. Do **not** run `wrf_wind_publisher` if you have your own wind source.
+  3. Either:
+     - Run `wrf_wind_publisher` to provide wind from WRF, or
+     - Run your own node that publishes `/wrf_wind`.
+     - If nothing publishes `/wrf_wind`, the plugin will not apply any forces.
 
 - To drive the plugin with your own wind field:
   - Publish messages of type `geometry_msgs/msg/Vector3Stamped` on the `/wrf_wind` topic, for example:
