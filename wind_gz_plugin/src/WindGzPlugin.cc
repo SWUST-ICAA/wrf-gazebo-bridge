@@ -57,10 +57,18 @@ struct WindGzPlugin::Data
   double refAlt{0.0};
 
   // Drag parameters
-  double fluidDensity{1.225};   // kg/m^3
-  double referenceArea{1.0};    // m^2
-  double linearCd{1.0};         // Translational drag coefficient (dimensionless)
-  double angularCd{1.0};        // Rotational drag coefficient (dimensionless)
+  double fluidDensity{1.225};    // kg/m^3
+  double referenceArea{1.0};     // m^2
+
+  // Isotropic drag coefficients (for backwards compatibility and as defaults)
+  double linearCd{1.0};          // Translational drag coefficient (dimensionless)
+  double angularCd{1.0};         // Rotational drag coefficient (dimensionless)
+
+  // Body-frame anisotropic drag coefficients (per-axis in body frame).
+  // These are derived from the scalar coefficients above unless explicitly
+  // overridden via SDF parameters such as linear_drag_coefficient_x, etc.
+  gz::math::Vector3d linearCdBody{1.0, 1.0, 1.0};
+  gz::math::Vector3d angularCdBody{0.5, 0.5, 0.5};
 
   // Safety limits for force / torque to avoid numerical blow-up in the physics engine
   double maxForce{1e3};         // N
@@ -195,6 +203,49 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     // Default rotational damping coefficient; smaller than translational
     // drag to avoid overly strong attitude damping.
     this->dataPtr->angularCd = 0.5;
+  }
+
+  // Initialize body-frame drag coefficients from the scalar defaults
+  this->dataPtr->linearCdBody.Set(
+    this->dataPtr->linearCd,
+    this->dataPtr->linearCd,
+    this->dataPtr->linearCd);
+  this->dataPtr->angularCdBody.Set(
+    this->dataPtr->angularCd,
+    this->dataPtr->angularCd,
+    this->dataPtr->angularCd);
+
+  // Optional per-axis overrides in body frame
+  if (sdf->HasElement("linear_drag_coefficient_x"))
+  {
+    this->dataPtr->linearCdBody.X() =
+      sdf->Get<double>("linear_drag_coefficient_x");
+  }
+  if (sdf->HasElement("linear_drag_coefficient_y"))
+  {
+    this->dataPtr->linearCdBody.Y() =
+      sdf->Get<double>("linear_drag_coefficient_y");
+  }
+  if (sdf->HasElement("linear_drag_coefficient_z"))
+  {
+    this->dataPtr->linearCdBody.Z() =
+      sdf->Get<double>("linear_drag_coefficient_z");
+  }
+
+  if (sdf->HasElement("angular_drag_coefficient_x"))
+  {
+    this->dataPtr->angularCdBody.X() =
+      sdf->Get<double>("angular_drag_coefficient_x");
+  }
+  if (sdf->HasElement("angular_drag_coefficient_y"))
+  {
+    this->dataPtr->angularCdBody.Y() =
+      sdf->Get<double>("angular_drag_coefficient_y");
+  }
+  if (sdf->HasElement("angular_drag_coefficient_z"))
+  {
+    this->dataPtr->angularCdBody.Z() =
+      sdf->Get<double>("angular_drag_coefficient_z");
   }
 
   // Optional: limit max force / torque to avoid divergence due to extreme coefficients
@@ -333,30 +384,54 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
 
   if (windActive)
   {
-    // Relative wind velocity (body velocity minus wind)
-    gz::math::Vector3d vRel = velWorld - windWorld;
-    const double speed = vRel.Length();
+    // Body-frame anisotropic drag model.
+    // 1) Compute relative wind and angular velocity in the body frame.
+    const auto &rot = pose.Rot();
 
+    // Relative linear wind: body velocity minus wind, in body frame
+    const gz::math::Vector3d vRelWorld = velWorld - windWorld;
+    const gz::math::Vector3d vRelBody = rot.RotateVectorReverse(vRelWorld);
+    const double speed = vRelBody.Length();
+
+    // Relative angular velocity in body frame
+    const gz::math::Vector3d omegaBody =
+      rot.RotateVectorReverse(angVelWorld);
+    const double omegaMag = omegaBody.Length();
+
+    // 2) Translational drag in body frame: per-axis coefficients
     if (speed > 1e-3)
     {
-      // F = -0.5 * rho * Cd * A * |v_rel| * v_rel
+      // F_body = -0.5 * rho * A_ref * |v_rel| * diag(Cd_body) * v_rel_body
       const double k =
         0.5 * this->dataPtr->fluidDensity *
-        this->dataPtr->linearCd *
-        this->dataPtr->referenceArea;
-      force = -k * speed * vRel;
+        this->dataPtr->referenceArea *
+        speed;
+
+      gz::math::Vector3d forceBody(
+        -k * this->dataPtr->linearCdBody.X() * vRelBody.X(),
+        -k * this->dataPtr->linearCdBody.Y() * vRelBody.Y(),
+        -k * this->dataPtr->linearCdBody.Z() * vRelBody.Z());
+
+      // Transform back to world frame
+      force = rot.RotateVector(forceBody);
     }
 
-    // Rotational drag torque (simple quadratic damping)
-    const double omegaMag = angVelWorld.Length();
+    // 3) Rotational drag torque in body frame: per-axis coefficients
     if (omegaMag > 1e-3)
     {
-      // M = -0.5 * rho * Cd_rot * A_ref * |omega| * omega
+      // M_body = -0.5 * rho * A_ref * |omega| * diag(Cd_ang_body) * omega_body
       const double kR =
         0.5 * this->dataPtr->fluidDensity *
-        this->dataPtr->angularCd *
-        this->dataPtr->referenceArea;
-      torque = -kR * omegaMag * angVelWorld;
+        this->dataPtr->referenceArea *
+        omegaMag;
+
+      gz::math::Vector3d torqueBody(
+        -kR * this->dataPtr->angularCdBody.X() * omegaBody.X(),
+        -kR * this->dataPtr->angularCdBody.Y() * omegaBody.Y(),
+        -kR * this->dataPtr->angularCdBody.Z() * omegaBody.Z());
+
+      // Transform back to world frame
+      torque = rot.RotateVector(torqueBody);
     }
 
     // Clamp force / torque to safe limits to avoid extreme values crashing ODE/physics
