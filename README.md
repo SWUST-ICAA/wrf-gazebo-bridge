@@ -1,47 +1,37 @@
+![simulation-demo](image/Animation.gif)
+
 # wrf-gazebo-bridge
 
-ROS 2 → Gazebo Harmonic bridge based on WRF atmospheric wind fields.
+![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange?logo=ubuntu)
+![ROS 2](https://img.shields.io/badge/ROS%202-Humble-blue?logo=ros)
+![Gazebo](https://img.shields.io/badge/Gazebo-Harmonic%20(gz--sim8)-purple?logo=gazebo)
+![Group](https://img.shields.io/badge/Group-SWUST--ICAA-success)
+![License](https://img.shields.io/badge/License-MIT-informational)
 
-- Read 3D wind from WRF `wrfout` (NetCDF) files
-- Interpolate in space and time at the robot's current latitude / longitude / altitude and publish `/wrf_wind`
-- Gazebo Harmonic system plugin reads `/wrf_wind` and applies aerodynamic forces and torques to the model
-- The plugin also publishes `/robot_gpsfix` (robot latitude / longitude / altitude) which is used as input to the wind interpolation node
+WRF–Gazebo bridge for simulating realistic, time-varying 3D wind fields in ROS 2 and Gazebo Harmonic.  
+It reads atmospheric wind from WRF `wrfout` NetCDF files, interpolates in space and time at the robot’s current latitude / longitude / altitude, publishes `/wrf_wind` in ROS 2, and applies the resulting aerodynamic forces and torques to a Gazebo model.
 
-Target environment: ROS 2 Humble and Gazebo Harmonic (`gz-sim8`).
-
----
-
-## Dependencies
-
-- Ubuntu 22.04
-- ROS 2 Humble (workspace already initialized)
-- Gazebo Harmonic
-- Python:
-  - `netCDF4`
-  - `numpy`
-
-Recommended installation for Python dependencies:
-
-```bash
-sudo apt install python3-netcdf4 python3-numpy
-```
-
----
-
-## Layout
-
-- `wrf_gazebo_bridge/`: ROS 2 Python package
-  - Reads WRF NetCDF files
-  - Subscribes to `/robot_gpsfix` (`sensor_msgs/NavSatFix`)
-  - Publishes `/wrf_wind` (`geometry_msgs/Vector3Stamped`)
-- `config/wrf_wind_config.yaml`: configuration for the wind node
-- `wind_gz_plugin/`: Gazebo Harmonic system plugin (C++)
-  - Subscribes to `/wrf_wind` and applies translational / rotational aerodynamic forces
-  - Publishes `/robot_gpsfix` (`NavSatFix`)
+The Gazebo system plugin is designed to be reusable: you can run it with the WRF-based wind node in this repository, or feed it from any custom ROS 2 wind topic as a standalone aerodynamic drag plugin.
 
 ---
 
 ## Build and Install
+
+### Dependencies
+
+- Ubuntu 22.04
+- ROS 2 Humble
+- Gazebo Harmonic (`gz-sim8`)
+- Python:
+  - `netCDF4`
+  - `numpy`
+  - `yaml` (for the `wrf_wrf_info.py` helper script)
+
+Recommended installation for Python dependencies:
+
+```bash
+sudo apt install python3-netcdf4 python3-numpy python3-yaml
+```
 
 ### 1. Build the ROS 2 package
 
@@ -52,7 +42,7 @@ colcon build --packages-select wrf_gazebo_bridge
 source install/setup.bash
 ```
 
-### 2. Build the Gazebo plugin
+### 2. Build and install the Gazebo plugin
 
 From this repository:
 
@@ -65,17 +55,19 @@ make
 sudo make install
 ```
 
-`CMakeLists.txt` installs the plugin to:
+The plugin is installed to:
 
 ```text
 /usr/lib/x86_64-linux-gnu/gz-sim-8/plugins
 ```
 
-This is the default Gazebo Harmonic (`gz-sim8`) system plugin path on Ubuntu, so you **do not** need to set `GZ_SIM_SYSTEM_PLUGIN_PATH`.
+This is the default Gazebo Harmonic (`gz-sim8`) system plugin path on Ubuntu, so you do not need to set `GZ_SIM_SYSTEM_PLUGIN_PATH`.
 
 ---
 
-## Configure the WRF Wind Node
+## Usage
+
+### 1. Configure the WRF wind node (YAML)
 
 Configuration file: `config/wrf_wind_config.yaml`, example:
 
@@ -99,24 +91,22 @@ Notes:
 - When the robot position is outside the WRF lat/lon domain, the wind falls back to the default value (usually 0).
 - The time axis uses WRF `XTIME` (minutes). The node supports arbitrary time resolution with linear or nearest interpolation.
 
-Run the node:
+### 2. Start the WRF wind node
+
+From your sourced workspace:
 
 ```bash
 ros2 run wrf_gazebo_bridge wrf_wind_publisher
 ```
 
 By default, the node will try to load parameters from the installed
-`config/wrf_wind_config.yaml` in the `wrf_gazebo_bridge` share directory.
+`config/wrf_wind_config.yaml` in the `wrf_gazebo_bridge` share directory.  
 You can still override any parameter via:
 
-- CLI: `--ros-args -p wrf_file_path:=/some/other/file.nc`  
-- Or a custom params file: `--ros-args --params-file your_custom.yaml`
+- CLI: `--ros-args -p wrf_file_path:=/some/other/file.nc`
+- Custom params file: `--ros-args --params-file your_custom.yaml`
 
----
-
-## Use the Plugin in Gazebo
-
-### 1. Add the plugin to your model SDF
+### 3. Add the plugin to your Gazebo model
 
 Inside the `<model>` that should be affected by wind:
 
@@ -144,21 +134,21 @@ Inside the `<model>` that should be affected by wind:
 
 World frame convention:
 
-- `+X` points east
-- `+Y` points north
+- `+X` points east  
+- `+Y` points north  
 - `+Z` points up
 
 The plugin converts the model position in world coordinates to latitude / longitude / altitude and publishes it on `/robot_gpsfix`.
 
-### 2. Start Gazebo
+### 4. Start Gazebo and verify topics
 
-Example:
+Start your world as usual, for example:
 
 ```bash
 gz sim your_world.sdf
 ```
 
-Verify that the plugin is loaded by checking the terminal output or via ROS topics:
+Check that the plugin and wind node are working:
 
 ```bash
 ros2 topic echo /robot_gpsfix
@@ -167,13 +157,13 @@ ros2 topic echo /wrf_wind
 
 When the model moves inside the WRF domain:
 
-- `/robot_gpsfix` latitude / longitude will change with the model pose
-- `/wrf_wind` will provide interpolated wind vectors at the current position
-- The model will experience translational and rotational aerodynamic drag
+- `/robot_gpsfix` latitude / longitude will change with the model pose.
+- `/wrf_wind` will provide interpolated wind vectors at the current position.
+- The model will experience translational and rotational aerodynamic drag.
 
 The plugin only applies aerodynamic forces / torques when:
 
-- There is at least one active publisher on `/wrf_wind`, **and**
+- There is at least one active publisher on `/wrf_wind`, and
 - At least one wind message has been received.
 
 If no node is publishing `/wrf_wind`, the plugin will still publish `/robot_gpsfix`,
@@ -181,17 +171,9 @@ but it will not apply any additional aerodynamic wrench to the model.
 
 ---
 
-## Data Flow Overview
-
-1. The Gazebo plugin computes the robot's current geodetic position from its pose and publishes `/robot_gpsfix`.
-2. `wrf_wind_publisher` subscribes to `/robot_gpsfix`, interpolates the 3D WRF wind field in space and time, and publishes `/wrf_wind`.
-3. The Gazebo plugin subscribes to `/wrf_wind`, computes aerodynamic forces / torques, and applies them to the model.
-
----
-
 ## Using Only the Aerodynamics Plugin (Without WRF)
 
-You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driven by a ROS wind topic, without using the WRF data or the `wrf_wind_publisher` node.
+You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driven by a ROS 2 wind topic, without using the WRF data or the `wrf_wind_publisher` node.
 
 - If you only need aerodynamic forces / torques:
   1. Build and install the plugin as described above.
@@ -220,14 +202,58 @@ You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driv
 
 ---
 
+## Inspecting WRF Files with `wrf_wrf_info.py`
+
+For quick inspection of a WRF `wrfout` file and to verify that your `wrf_file_path`
+in the YAML config is correct, you can use the helper script:
+
+```bash
+cd ~/Work_directory/wrfTOgazebo_ws/src/wrf-gazebo-bridge
+python3 wrf_gazebo_bridge/wrf_wrf_info.py
+```
+
+Behavior:
+
+- If `--wrf-file` is not provided, the script will:
+  1. Look for `config/wrf_wind_config.yaml` in the source tree.
+  2. If not found, try the installed share directory from `ament_index`.
+  3. Read `wrf_file_path` from the `ros__parameters` section.
+- If `--wrf-file` is provided, that path is used directly:
+
+  ```bash
+  python3 -m wrf_gazebo_bridge.wrf_wrf_info --wrf-file /path/to/wrfout_d01_...
+  ```
+
+The script prints:
+
+- Latitude / longitude range and domain center
+- Approximate horizontal extent (north-south / east-west, meters)
+- Vertical height range (mass levels, meters)
+- Terrain height and lowest mass-level height at the domain center
+- Min / max / mean wind speed over the domain
+
+---
+
 ## Troubleshooting
 
 - **Gazebo cannot find the plugin**
   - Ensure `sudo make install` has been run.
   - Check that `/usr/lib/x86_64-linux-gnu/gz-sim-8/plugins/libWindGzPlugin.so` exists.
+
 - **WRF file cannot be opened**
-  - Verify that `wrf_file_path` is a correct absolute path.
+  - Verify that `wrf_file_path` in `config/wrf_wind_config.yaml` is a correct absolute path.
   - Make sure you have sourced `install/setup.bash` in your terminal.
+
 - **Wind is always zero**
   - Check that the robot lat/lon is inside the WRF domain.
-  - Check `use_3d_wind` and time interpolation parameters in the YAML config.
+  - Check `use_3d_wind` and `time_interpolation` parameters in the YAML config.
+  - Confirm that `/wrf_wind` has at least one publisher and the WRF node is running.
+
+- **No aerodynamic effect when using custom wind**
+  - Confirm that your custom node publishes `geometry_msgs/msg/Vector3Stamped` on `/wrf_wind`.
+  - Check that the `vector` fields are non-zero and in the correct frame (`world`).
+
+---
+
+If you find this repository useful, please consider giving it a star to support our work. ⭐
+
