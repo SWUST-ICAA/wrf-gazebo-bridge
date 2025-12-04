@@ -191,7 +191,7 @@ You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driv
   3. Do **not** run `wrf_wind_publisher` if you have your own wind source.
 
 - To drive the plugin with your own wind field:
-  - Publish messages of type `geometry_msgs/msg/Vector3Stamped` on the `/wrf_wind` topic:
+  - Publish messages of type `geometry_msgs/msg/Vector3Stamped` on the `/wrf_wind` topic, for example:
 
     ```bash
     ros2 topic pub /wrf_wind geometry_msgs/msg/Vector3Stamped "
