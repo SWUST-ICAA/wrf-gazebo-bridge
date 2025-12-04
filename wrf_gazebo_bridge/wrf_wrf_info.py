@@ -10,6 +10,10 @@ Features:
 
 Example usage:
 
+    # 1) Use the wrf_file_path from the YAML config:
+    python3 wrf_gazebo_bridge/wrf_wrf_info.py
+
+    # 2) Or specify a file explicitly:
     python3 -m wrf_gazebo_bridge.wrf_wrf_info --wrf-file /path/to/wrfout_d01_...
 """
 
@@ -20,6 +24,20 @@ import math
 import os
 import sys
 from typing import Tuple
+
+try:
+    import yaml  # type: ignore
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
+
+try:
+    from ament_index_python.packages import (
+        get_package_share_directory,
+        PackageNotFoundError,
+    )
+except ImportError:  # pragma: no cover
+    get_package_share_directory = None  # type: ignore[assignment]
+    PackageNotFoundError = Exception  # type: ignore[assignment]
 
 
 def _load_nc(path: str):
@@ -175,6 +193,59 @@ def _wind_stats(nc) -> Tuple[float, float, float]:
     return v_min, v_max, v_mean
 
 
+def _wrf_path_from_config() -> str | None:
+    """Try to read wrf_file_path from the YAML config.
+
+    Search order:
+      1) Local config/ directory next to the source tree
+      2) Installed share directory from ament index (if available)
+    """
+    # 1) Local config directory (source checkout)
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    src_root = os.path.dirname(this_dir)
+    local_yaml = os.path.join(src_root, "config", "wrf_wind_config.yaml")
+
+    candidates = [local_yaml]
+
+    # 2) Installed share directory (if ament_index is available)
+    if get_package_share_directory is not None:
+        try:
+            share_dir = get_package_share_directory("wrf_gazebo_bridge")
+            share_yaml = os.path.join(share_dir, "config", "wrf_wind_config.yaml")
+            candidates.append(share_yaml)
+        except PackageNotFoundError:  # pragma: no cover
+            pass
+
+    if yaml is None:
+        return None
+
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:  # pragma: no cover
+            continue
+
+        # Try multiple possible layouts:
+        # wrf_wind_publisher:
+        #   ros__parameters:
+        #     wrf_file_path: "..."
+        for key in ("wrf_wind_publisher", "wrf_wind_publisher_node"):
+            if key in data and isinstance(data[key], dict):
+                params = data[key].get("ros__parameters", {}) or {}
+                if isinstance(params, dict) and "wrf_file_path" in params:
+                    return str(params["wrf_file_path"])
+
+        # Or a flat ros__parameters at the top-level
+        params = data.get("ros__parameters", {})
+        if isinstance(params, dict) and "wrf_file_path" in params:
+            return str(params["wrf_file_path"])
+
+    return None
+
+
 def summarize_wrf(path: str) -> None:
     """Read a WRF file and print key domain and wind statistics."""
     nc = _load_nc(path)
@@ -249,12 +320,24 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--wrf-file",
-        required=True,
+        required=False,
         help="Path to wrfout NetCDF file (.nc or wrfout_d01_...).",
     )
 
     args = parser.parse_args(argv)
-    wrf_path = os.path.expanduser(args.wrf_file)
+    wrf_path: str | None
+    if args.wrf_file:
+        wrf_path = os.path.expanduser(args.wrf_file)
+    else:
+        wrf_path = _wrf_path_from_config()
+        if wrf_path is None:
+            print(
+                "Error: no --wrf-file given and failed to infer wrf_file_path "
+                "from config/wrf_wind_config.yaml.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        wrf_path = os.path.expanduser(wrf_path)
 
     if not os.path.isfile(wrf_path):
         print(f"Error: file not found: {wrf_path}", file=sys.stderr)
