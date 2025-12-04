@@ -1,14 +1,14 @@
 """
-简单的 WRF 文件信息查看脚本。
+Simple utility script to inspect a WRF ``wrfout`` NetCDF file.
 
-功能：
-- 读取 wrfout NetCDF 文件
-- 输出经纬度范围、中心点
-- 输出高度范围（米）
-- 估算地区水平范围（南北/东西跨度，单位：米）
-- 统计风速（最大/最小/平均风速）
+Features:
+- Read a WRF ``wrfout`` NetCDF file
+- Print latitude / longitude range and domain center
+- Print vertical height range (m)
+- Estimate horizontal domain extent (north-south / east-west, meters)
+- Compute basic wind statistics (min / max / mean speed)
 
-用法示例：
+Example usage:
 
     python3 -m wrf_gazebo_bridge.wrf_wrf_info --wrf-file /path/to/wrfout_d01_...
 """
@@ -27,11 +27,11 @@ def _load_nc(path: str):
         import netCDF4  # type: ignore
     except ImportError as exc:  # pragma: no cover
         print(
-            "导入 netCDF4 失败，请先安装依赖：\n"
+            "Failed to import netCDF4, please install the dependency first:\n"
             "  sudo apt install python3-netcdf4\n"
-            "或：\n"
+            "or:\n"
             "  pip install netCDF4\n"
-            f"当前错误：{exc}",
+            f"Import error: {exc}",
             file=sys.stderr,
         )
         raise
@@ -40,7 +40,7 @@ def _load_nc(path: str):
 
 
 def _latlon_info(nc) -> Tuple[float, float, float, float, float, float, float, float]:
-    """从 XLAT/XLONG 中提取经纬度范围和中心，并估算水平范围（米）。"""
+    """Extract lat / lon range and center from XLAT / XLONG and estimate horizontal extent (m)."""
     import numpy as np  # type: ignore
 
     xlat = nc.variables["XLAT"][0, :, :]  # (south_north, west_east)
@@ -54,7 +54,7 @@ def _latlon_info(nc) -> Tuple[float, float, float, float, float, float, float, f
     lat_center = 0.5 * (lat_min + lat_max)
     lon_center = 0.5 * (lon_min + lon_max)
 
-    # 使用简单球体地球模型估算南北/东西跨度
+    # Use a simple spherical Earth model to estimate north-south / east-west extents
     earth_radius = 6378137.0  # m
     lat0_rad = math.radians(lat_center)
 
@@ -77,7 +77,7 @@ def _latlon_info(nc) -> Tuple[float, float, float, float, float, float, float, f
 
 
 def _height_info(nc) -> Tuple[float, float]:
-    """通过 PH/PHB 计算质量面高度范围（米）。"""
+    """Compute height range (m) of mass levels using PH / PHB."""
     import numpy as np  # type: ignore
 
     if "PH" not in nc.variables or "PHB" not in nc.variables:
@@ -86,8 +86,8 @@ def _height_info(nc) -> Tuple[float, float]:
     ph = nc.variables["PH"][:]  # (Time, bottom_top_stag, ny, nx)
     phb = nc.variables["PHB"][:]
     g = 9.81
-    z_stag = (ph + phb) / g  # W 水平高度
-    # 质量面高度：相邻 W 面的平均值
+    z_stag = (ph + phb) / g  # geopotential height at W levels
+    # Mass-level height: average between adjacent W levels
     z_mass = 0.5 * (z_stag[:, :-1, :, :] + z_stag[:, 1:, :, :])
 
     z_min = float(np.min(z_mass))
@@ -98,18 +98,18 @@ def _height_info(nc) -> Tuple[float, float]:
 def _center_altitude(
     nc, lat_center: float, lon_center: float
 ) -> Tuple[float | None, float | None]:
-    """计算经纬度范围中心点附近的地形高度和最低质量面高度（米）。
+    """Compute terrain height and lowest mass-level height (m) near the lat/lon center.
 
-    返回:
+    Returns:
       (terrain_alt, lowest_mass_level_alt)
-      若缺少对应变量，则为 None。
+      Values are ``None`` if the corresponding variables are not present.
     """
     import numpy as np  # type: ignore
 
     xlat = nc.variables["XLAT"][0, :, :]
     xlon = nc.variables["XLONG"][0, :, :]
 
-    # 找到最接近中心经纬度的网格点索引
+    # Find the grid point closest to the domain center
     lat0_rad = math.radians(lat_center)
     dlat = xlat - lat_center
     dlon = (xlon - lon_center) * math.cos(lat0_rad)
@@ -121,12 +121,12 @@ def _center_altitude(
     terrain_alt: float | None = None
     lowest_mass_alt: float | None = None
 
-    # 地形高度 HGT（如果有）
+    # Terrain height HGT (if available)
     if "HGT" in nc.variables:
         hgt = nc.variables["HGT"][0, :, :]
         terrain_alt = float(hgt[j, i])
 
-    # 最低质量面高度（PH/PHB，如果有）
+    # Lowest mass-level height from PH/PHB (if available)
     if "PH" in nc.variables and "PHB" in nc.variables:
         ph = nc.variables["PH"][:]  # (Time, bottom_top_stag, ny, nx)
         phb = nc.variables["PHB"][:]
@@ -139,15 +139,15 @@ def _center_altitude(
 
 
 def _wind_stats(nc) -> Tuple[float, float, float]:
-    """统计风速的最小/最大/平均值（m/s）。优先使用 3D U/V/W。"""
+    """Compute min / max / mean wind speed (m/s). Prefer 3D U/V/W if available."""
     import numpy as np  # type: ignore
 
     if "U" in nc.variables and "V" in nc.variables:
-        # 3D 风场
+        # 3D wind field
         u_raw = nc.variables["U"][:]  # (Time, bottom_top, ny, nx_stag)
         v_raw = nc.variables["V"][:]  # (Time, bottom_top, ny_stag, nx)
 
-        # U/V 去除水平交错，得到质量点风速
+        # Remove staggering in U/V to get wind at mass points
         u_mass = 0.5 * (u_raw[:, :, :, :-1] + u_raw[:, :, :, 1:])
         v_mass = 0.5 * (v_raw[:, :, :-1, :] + v_raw[:, :, 1:, :])
 
@@ -159,12 +159,15 @@ def _wind_stats(nc) -> Tuple[float, float, float]:
 
         speed = np.sqrt(u_mass ** 2 + v_mass ** 2 + w_mass ** 2)
     elif "U10" in nc.variables and "V10" in nc.variables:
-        # 仅使用 10m 风
+        # Fallback: 10 m wind only
         u10 = nc.variables["U10"][:]  # (Time, ny, nx)
         v10 = nc.variables["V10"][:]
         speed = np.sqrt(u10 ** 2 + v10 ** 2)
     else:
-        raise RuntimeError("未在 wrf 文件中找到 U/V 或 U10/V10 变量，无法计算风速统计量")
+        raise RuntimeError(
+            "Could not find U/V or U10/V10 variables in the wrf file; "
+            "cannot compute wind speed statistics."
+        )
 
     v_min = float(np.min(speed))
     v_max = float(np.max(speed))
@@ -173,10 +176,10 @@ def _wind_stats(nc) -> Tuple[float, float, float]:
 
 
 def summarize_wrf(path: str) -> None:
-    """读取 WRF 文件并打印关键信息。"""
+    """Read a WRF file and print key domain and wind statistics."""
     nc = _load_nc(path)
 
-    # 经纬度与水平范围
+    # Lat/lon and horizontal extent
     (
         lat_min,
         lat_max,
@@ -188,79 +191,79 @@ def summarize_wrf(path: str) -> None:
         east_west_extent,
     ) = _latlon_info(nc)
 
-    # 高度范围
+    # Height range
     z_min, z_max = _height_info(nc)
 
-    # 中心经纬度附近的地形/最低层高度
+    # Terrain / lowest mass-level height at domain center
     center_terrain_alt, center_lowest_mass_alt = _center_altitude(
         nc, lat_center, lon_center
     )
 
-    # 风速统计
+    # Wind statistics
     v_min, v_max, v_mean = _wind_stats(nc)
 
-    print("WRF 文件关键信息")
+    print("WRF file summary")
     print("----------------")
-    print(f"文件路径: {path}")
+    print(f"File path: {path}")
     print()
 
-    print("经纬度范围:")
-    print(f"  纬度: {lat_min:.4f}°  ~  {lat_max:.4f}°")
-    print(f"  经度: {lon_min:.4f}°  ~  {lon_max:.4f}°")
-    print(f"  中心点: ({lat_center:.4f}°, {lon_center:.4f}°)")
+    print("Latitude / longitude range:")
+    print(f"  Latitude: {lat_min:.4f}°  ~  {lat_max:.4f}°")
+    print(f"  Longitude: {lon_min:.4f}°  ~  {lon_max:.4f}°")
+    print(f"  Center: ({lat_center:.4f}°, {lon_center:.4f}°)")
     print()
 
-    print("水平地区范围（近似值，单位：米）:")
-    print(f"  南北跨度: {north_south_extent:.1f} m")
-    print(f"  东西跨度: {east_west_extent:.1f} m")
+    print("Horizontal extent (approximate, meters):")
+    print(f"  North-south extent: {north_south_extent:.1f} m")
+    print(f"  East-west extent:   {east_west_extent:.1f} m")
     print()
 
-    print("高度范围（质量面，高度单位：米）:")
+    print("Height range (mass levels, meters):")
     if math.isnan(z_min) or math.isnan(z_max):
-        print("  未找到 PH/PHB 变量，无法计算高度范围")
+        print("  PH/PHB variables not found; cannot compute height range.")
     else:
-        print(f"  高度: {z_min:.1f} m  ~  {z_max:.1f} m")
+        print(f"  Height: {z_min:.1f} m  ~  {z_max:.1f} m")
     print()
 
-    print("经纬度范围中心的高度信息（单位：米）:")
+    print("Heights at domain center (meters):")
     if center_terrain_alt is not None:
-        print(f"  地形高度 HGT: {center_terrain_alt:.1f} m")
+        print(f"  Terrain height HGT:         {center_terrain_alt:.1f} m")
     else:
-        print("  未找到 HGT 变量，无法给出地形高度")
+        print("  HGT variable not found; terrain height unavailable.")
 
     if center_lowest_mass_alt is not None:
-        print(f"  最低质量面高度 (PH/PHB): {center_lowest_mass_alt:.1f} m")
+        print(f"  Lowest mass-level height:   {center_lowest_mass_alt:.1f} m")
     else:
-        print("  未找到 PH/PHB 变量，无法给出最低质量面高度")
+        print("  PH/PHB variables not found; lowest mass level unavailable.")
     print()
 
-    print("风速统计（m/s）:")
-    print(f"  最小风速: {v_min:.3f} m/s")
-    print(f"  最大风速: {v_max:.3f} m/s")
-    print(f"  平均风速: {v_mean:.3f} m/s")
+    print("Wind speed statistics (m/s):")
+    print(f"  Min speed:   {v_min:.3f} m/s")
+    print(f"  Max speed:   {v_max:.3f} m/s")
+    print(f"  Mean speed:  {v_mean:.3f} m/s")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="读取 WRF wrfout 文件并输出经纬度、风速和高度等关键信息",
+        description="Read a WRF wrfout file and print key geospatial and wind information.",
     )
     parser.add_argument(
         "--wrf-file",
         required=True,
-        help="wrfout NetCDF 文件路径（.nc 或 wrfout_d01_...）",
+        help="Path to wrfout NetCDF file (.nc or wrfout_d01_...).",
     )
 
     args = parser.parse_args(argv)
     wrf_path = os.path.expanduser(args.wrf_file)
 
     if not os.path.isfile(wrf_path):
-        print(f"错误：文件不存在: {wrf_path}", file=sys.stderr)
+        print(f"Error: file not found: {wrf_path}", file=sys.stderr)
         sys.exit(1)
 
     try:
         summarize_wrf(wrf_path)
     except Exception as exc:  # pragma: no cover
-        print(f"分析 WRF 文件时发生错误: {exc}", file=sys.stderr)
+        print(f"Error while analyzing WRF file: {exc}", file=sys.stderr)
         sys.exit(1)
 
 

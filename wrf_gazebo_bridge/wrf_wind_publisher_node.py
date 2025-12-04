@@ -15,12 +15,12 @@ class WrfWindPublisher(Node):
     def __init__(self) -> None:
         super().__init__("wrf_wind_publisher")
 
-        # 声明参数（可在 YAML 中配置）
+        # Declare parameters (configurable via YAML)
         self.declare_parameter("wrf_file_path", "wrfout_data/wrfout_d01_2022-07-01_00_00_00")
         self.declare_parameter("position_topic", "/gps/fix")
         self.declare_parameter("wind_topic", "/wrf_wind")
         self.declare_parameter("use_3d_wind", True)
-        self.declare_parameter("time_interpolation", "linear")  # 或 "nearest"
+        self.declare_parameter("time_interpolation", "linear")  # or "nearest"
         self.declare_parameter("default_wind_x", 0.0)
         self.declare_parameter("default_wind_y", 0.0)
         self.declare_parameter("default_wind_z", 0.0)
@@ -40,29 +40,30 @@ class WrfWindPublisher(Node):
             self.get_parameter("time_offset_seconds").get_parameter_value().double_value
         )
 
-        # 延迟导入 netCDF4 / numpy，便于在系统未安装时给出清晰错误
+        # Lazy-import netCDF4 / numpy so we can show a clear error if missing
         try:
             import netCDF4  # type: ignore
             import numpy as np  # type: ignore
-        except ImportError as exc:  # pragma: no cover - 运行时提示
+        except ImportError as exc:  # pragma: no cover - runtime hint
             self.get_logger().error(
-                "需要 Python 库 netCDF4 和 numpy 才能读取 wrfout 文件，请先安装：\n"
+                "Python libraries netCDF4 and numpy are required to read wrfout "
+                "files. Please install them, for example:\n"
                 "  sudo apt install python3-netcdf4 python3-numpy  (Ubuntu)\n"
-                "或使用 pip 安装：\n"
+                "or with pip:\n"
                 "  pip install netCDF4 numpy\n"
-                f"当前导入错误: {exc}"
+                f"Import error: {exc}"
             )
             raise
 
         self._nc = netCDF4.Dataset(wrf_file_path, mode="r")
-        self._np = np  # 保存引用，避免在其他方法重复导入
+        self._np = np  # Keep a reference to avoid re-imports in other methods
 
         self._load_static_fields()
 
-        # 记录节点启动 ROS 时间，用于与 WRF 时间轴做简单映射
+        # Record ROS time when the node starts, used to map onto WRF time axis
         self._start_ros_time = self.get_clock().now()
 
-        # 订阅 GPS（NavSatFix）
+        # Subscribe to GPS (NavSatFix)
         self._position_sub = self.create_subscription(
             NavSatFix,
             position_topic,
@@ -70,44 +71,45 @@ class WrfWindPublisher(Node):
             10,
         )
 
-        # 发布风矢量，使用 Vector3Stamped，单位 m/s，在 WRF 网格坐标近似东(x)、北(y)、上(z)
+        # Publish wind vector using Vector3Stamped, unit m/s,
+        # approximately east(x), north(y), up(z) in WRF grid/world coordinates
         self._wind_pub = self.create_publisher(Vector3Stamped, wind_topic, 10)
 
         self.get_logger().info(
-            f"WRF wind publisher 已启动，wrf 文件: {wrf_file_path}, "
-            f"订阅位置话题: {position_topic}, 发布风话题: {wind_topic}"
+            f"WRF wind publisher started. wrf file: {wrf_file_path}, "
+            f"subscribing to position topic: {position_topic}, publishing wind topic: {wind_topic}"
         )
 
     def _load_static_fields(self) -> None:
         """Load WRF grids (time, lat/lon, heights, wind fields) into memory."""
         np = self._np
 
-        # 时间轴（XTIME 单位为 minutes since ...）
+        # Time axis (XTIME is typically 'minutes since ...')
         self._xtime_minutes = self._nc.variables["XTIME"][:]  # shape (Time,)
         self._nt = self._xtime_minutes.shape[0]
 
-        # 经纬度网格（假设随时间不变，取第 0 个时间步）
+        # Lat / lon grid (assume time-invariant, take time index 0)
         xlat = self._nc.variables["XLAT"][0, :, :]  # (south_north, west_east)
         xlon = self._nc.variables["XLONG"][0, :, :]
         self._xlat = np.array(xlat)
         self._xlon = np.array(xlon)
         self._ny, self._nx = self._xlat.shape
 
-        # 预计算经纬度范围，用于判断是否超出水平范围
+        # Precompute lat/lon bounds to detect out-of-domain queries
         self._lat_min = float(np.min(self._xlat))
         self._lat_max = float(np.max(self._xlat))
         self._lon_min = float(np.min(self._xlon))
         self._lon_max = float(np.max(self._xlon))
 
-        # 展平后的经纬度，用于最近邻搜索
+        # Flattened lat/lon for neighbor search
         self._lat_flat = self._xlat.reshape(-1)
         self._lon_flat = self._xlon.reshape(-1)
-        # 对应的二维索引
+        # Corresponding 2D indices (j, i) for each flattened element
         j_indices, i_indices = np.indices(self._xlat.shape)
         self._j_flat = j_indices.reshape(-1)
         self._i_flat = i_indices.reshape(-1)
 
-        # 读取风场
+        # Load wind fields
         if self.use_3d_wind:
             # U: (Time, bottom_top, south_north, west_east_stag)
             # V: (Time, bottom_top, south_north_stag, west_east)
@@ -116,7 +118,7 @@ class WrfWindPublisher(Node):
             v_raw = self._nc.variables["V"][:]
             w_raw = self._nc.variables["W"][:]
 
-            # 去除 stagger，使 U, V, W 都在 (Time, bottom_top, south_north, west_east) 上
+            # Remove staggering so U, V, W are all on (Time, bottom_top, south_north, west_east)
             u_mass = 0.5 * (u_raw[..., :-1] + u_raw[..., 1:])
             v_mass = 0.5 * (v_raw[:, :, :-1, :] + v_raw[:, :, 1:, :])
             w_mass = 0.5 * (w_raw[:, :-1, :, :] + w_raw[:, 1:, :, :])
@@ -125,24 +127,24 @@ class WrfWindPublisher(Node):
             self._v = np.array(v_mass)
             self._w = np.array(w_mass)
 
-            # 高度（利用 geopotential）
+            # Height (from geopotential)
             ph = self._nc.variables["PH"][:]   # (Time, bottom_top_stag, ny, nx)
             phb = self._nc.variables["PHB"][:]
             g = 9.81
-            z_stag = (ph + phb) / g  # W 水平上的几何高度
+            z_stag = (ph + phb) / g  # geometric height at W levels
             z_mass = 0.5 * (z_stag[:, :-1, :, :] + z_stag[:, 1:, :, :])
             self._z = np.array(z_mass)  # (Time, bottom_top, ny, nx)
         else:
-            # 只使用 10m 风，忽略垂直维
+            # Use only 10 m wind, ignore vertical dimension
             self._u10 = np.array(self._nc.variables["U10"][:])  # (Time, ny, nx)
             self._v10 = np.array(self._nc.variables["V10"][:])
 
-    # ---- 插值工具函数 ----
+    # ---- Interpolation utilities ----
 
     def _find_horizontal_neighbors(
         self, lat: float, lon: float, k_neighbors: int = 4
     ) -> Optional[Tuple["self._np.ndarray", "self._np.ndarray", "self._np.ndarray"]]:
-        """在水平网格上找到若干个邻近网格点，并给出反距离权重."""
+        """Find several neighboring horizontal grid points with inverse-distance weights."""
         np = self._np
 
         if (
@@ -153,11 +155,11 @@ class WrfWindPublisher(Node):
         ):
             return None
 
-        # 先计算到所有网格点的粗略距离（未考虑投影，只作为插值权重用）
+        # Compute an approximate distance to every grid point (for weighting only, not geodesy)
         dlat = self._lat_flat - lat
         dlon = (self._lon_flat - lon) * math.cos(math.radians(lat))
         dist2 = dlat * dlat + dlon * dlon
-        # 若恰好落在某个网格点上，则直接使用该点
+        # If the query lies almost exactly on a grid point, use that point only
         idx_min = int(np.argmin(dist2))
         min_d2 = float(dist2[idx_min])
         if min_d2 < 1e-12:
@@ -169,9 +171,9 @@ class WrfWindPublisher(Node):
                 np.array([1.0], dtype=float),
             )
 
-        # 选取若干个最近邻，用反距离平方作为权重
+        # Select K nearest neighbors, use inverse-distance-squared weights
         k = int(min(k_neighbors, dist2.size))
-        # argpartition 比完整排序更快
+        # argpartition is cheaper than a full sort
         idxs = np.argpartition(dist2, k - 1)[:k]
         d2_sel = dist2[idxs]
         eps = 1e-12
@@ -184,7 +186,7 @@ class WrfWindPublisher(Node):
         return js, is_, ws
 
     def _find_time_indices(self, now: Time) -> Tuple[int, int, float]:
-        """Map ROS 时间到 WRF 时间步索引 (k0, k1, alpha)."""
+        """Map ROS time to WRF time-step indices (k0, k1, alpha)."""
         np = self._np
 
         dt_ros = (now - self._start_ros_time).nanoseconds * 1e-9 + self.time_offset_seconds
@@ -201,7 +203,7 @@ class WrfWindPublisher(Node):
             k = self._nt - 1
             return k, k, 0.0
 
-        # 找到 t_array[k0] <= t_minutes <= t_array[k1]
+        # Find indices such that t_array[k0] <= t_minutes <= t_array[k1]
         k1 = int(np.searchsorted(t_array, t_minutes))
         k0 = k1 - 1
         t0 = float(t_array[k0])
@@ -212,7 +214,7 @@ class WrfWindPublisher(Node):
             alpha = (t_minutes - t0) / (t1 - t0)
 
         if self.time_interp != "linear":
-            # 最近邻模式
+            # Nearest-neighbor mode
             if alpha < 0.5:
                 return k0, k0, 0.0
             return k1, k1, 0.0
@@ -222,21 +224,21 @@ class WrfWindPublisher(Node):
     def _interpolate_vertical(
         self, z_column: "self._np.ndarray", u_col, v_col, w_col, alt: float
     ) -> Tuple[float, float, float]:
-        """在单个垂直柱 (levels) 内按高度插值风速。
+        """Interpolate wind vertically within a single column of levels.
 
-        处理策略：
-        - alt 在层间：做线性插值
-        - alt 低于最低层：使用最低层风速（贴地近似）
-        - alt 高于最高层：使用最高层风速
+        Strategy:
+        - If ``alt`` is between two levels: linear interpolation
+        - If ``alt`` is below the lowest level: use the lowest level (near-surface approximation)
+        - If ``alt`` is above the highest level: use the highest level
         """
         np = self._np
 
         # z_column: (bottom_top,)
-        # 假设 z 随 level 单调递增
+        # Assume z is monotonically increasing with level index
         z0 = float(z_column[0])
         zN = float(z_column[-1])
 
-        # 低于最低层：直接使用最低层
+        # Below the lowest level: use that level directly
         if alt <= z0:
             return (
                 float(u_col[0]),
@@ -244,7 +246,7 @@ class WrfWindPublisher(Node):
                 float(w_col[0]),
             )
 
-        # 高于最高层：直接使用最高层
+        # Above the highest level: use that level directly
         if alt >= zN:
             return (
                 float(u_col[-1]),
@@ -252,7 +254,7 @@ class WrfWindPublisher(Node):
                 float(w_col[-1]),
             )
 
-        # 假设 z 随 level 单调，使用 searchsorted
+        # Monotonic z, use searchsorted to find interval
         k1 = int(np.searchsorted(z_column, alt))
         k0 = k1 - 1
         z0 = float(z_column[k0])
@@ -277,7 +279,7 @@ class WrfWindPublisher(Node):
     def _wind_at_single_time(
         self, k_time: int, lat: float, lon: float, alt: float
     ) -> Tuple[float, float, float]:
-        """给定 WRF 时间步索引和位置，计算该时刻风矢量（含水平插值）。"""
+        """Compute wind vector at a given WRF time index and position (with horizontal interpolation)."""
         neighbors = self._find_horizontal_neighbors(lat, lon)
         if neighbors is None:
             return self.default_wind
@@ -285,7 +287,7 @@ class WrfWindPublisher(Node):
         js, is_, ws = neighbors
 
         if self.use_3d_wind:
-            # 先在每个水平方向邻点的垂直方向做插值，再对这些结果做水平加权平均
+            # First interpolate vertically at each neighbor, then do weighted horizontal averaging
             u_sum = 0.0
             v_sum = 0.0
             w_sum = 0.0
@@ -302,7 +304,7 @@ class WrfWindPublisher(Node):
                 w_sum += w_h * w_loc
             return float(u_sum), float(v_sum), float(w_sum)
 
-        # 只使用 10m 风：先在水平上做反距离权重，再忽略高度
+        # 10 m wind only: inverse-distance weighting horizontally, ignore altitude
         u_sum = 0.0
         v_sum = 0.0
         for j, i, w_h in zip(js, is_, ws):
@@ -313,7 +315,7 @@ class WrfWindPublisher(Node):
         return float(u_sum), float(v_sum), 0.0
 
     def _compute_wind(self, now: Time, lat: float, lon: float, alt: float) -> Tuple[float, float, float]:
-        """根据当前 ROS 时间与位置计算风矢量（进行时间插值）。"""
+        """Compute wind vector at given ROS time and position, including time interpolation."""
         k0, k1, alpha = self._find_time_indices(now)
 
         if k0 == k1 or alpha <= 0.0:
@@ -327,11 +329,11 @@ class WrfWindPublisher(Node):
         w = (1.0 - alpha) * v0[2] + alpha * v1[2]
         return u, v, w
 
-    # ---- ROS 回调 ----
+    # ---- ROS callbacks ----
 
     def _on_position(self, msg: NavSatFix) -> None:
-        """位置订阅回调，根据 NavSatFix 的经纬度/高度计算风场并发布。"""
-        # 如果 NavSatFix 中的 altitude 为 NaN，可按需要修改为使用固定高度
+        """Callback for NavSatFix; compute and publish wind given the current geodetic position."""
+        # If NavSatFix altitude is NaN, you may modify this to use a fixed height instead
         lat = msg.latitude
         lon = msg.longitude
         alt = msg.altitude

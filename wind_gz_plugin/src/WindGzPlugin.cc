@@ -30,30 +30,30 @@ struct WindGzPlugin::Data
   gz::sim::Entity linkEntity{gz::sim::kNullEntity};
   std::string linkName{"base_link"};
 
-  // ROS2
+  // ROS 2
   std::shared_ptr<rclcpp::Node> rosNode;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr windSub;
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr gpsPub;
   std::thread rosSpinThread;
   std::atomic<bool> stopRos{false};
 
-  // 最近一次收到的风场（世界坐标系）
+  // Most recent wind vector received (world frame)
   std::mutex windMutex;
   gz::math::Vector3d windWorld{0, 0, 0};
   bool haveWind{false};
 
-  // 参考地理坐标（Gazebo 世界原点对应的经纬度）
+  // Reference geodetic coordinates (lat/lon/alt corresponding to world origin)
   double refLatDeg{0.0};
   double refLonDeg{0.0};
   double refAlt{0.0};
 
-  // 阻力参数
+  // Drag parameters
   double fluidDensity{1.225};   // kg/m^3
   double referenceArea{1.0};    // m^2
-  double linearCd{1.0};         // 平动阻力系数（无量纲）
-  double angularCd{1.0};        // 转动阻力系数（无量纲）
+  double linearCd{1.0};         // Translational drag coefficient (dimensionless)
+  double angularCd{1.0};        // Rotational drag coefficient (dimensionless)
 
-  // 力 / 力矩的安全上限，避免极端参数导致仿真爆炸
+  // Safety limits for force / torque to avoid numerical blow-up in the physics engine
   double maxForce{1e3};         // N
   double maxTorque{1e3};        // N·m
 };
@@ -91,7 +91,7 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     return;
   }
 
-  // 读取 SDF 参数
+  // Read SDF parameters
   auto sdf = const_cast<sdf::Element *>(_sdf.get());
 
   if (sdf->HasElement("link_name"))
@@ -129,7 +129,7 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     this->dataPtr->angularCd = sdf->Get<double>("angular_drag_coefficient");
   }
 
-  // 可选：限制最大力和力矩，防止过大系数导致仿真发散
+  // Optional: limit max force / torque to avoid divergence due to extreme coefficients
   if (sdf->HasElement("max_force"))
   {
     this->dataPtr->maxForce = sdf->Get<double>("max_force");
@@ -139,7 +139,7 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     this->dataPtr->maxTorque = sdf->Get<double>("max_torque");
   }
 
-  // 获取 link 实体
+  // Look up the link entity
   this->dataPtr->linkEntity =
     this->dataPtr->model.LinkByName(_ecm, this->dataPtr->linkName);
 
@@ -150,13 +150,13 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     return;
   }
 
-  // 使能速度检查，确保 WorldLinearVelocity / WorldAngularVelocity 组件存在
+  // Enable velocity checks so WorldLinearVelocity / WorldAngularVelocity components exist
   {
     gz::sim::Link link(this->dataPtr->linkEntity);
     link.EnableVelocityChecks(_ecm, true);
   }
 
-  // 初始化 ROS2
+  // Initialize ROS 2
   if (!rclcpp::ok())
   {
     int argc = 0;
@@ -166,7 +166,7 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
 
   this->dataPtr->rosNode = std::make_shared<rclcpp::Node>("wind_gz_plugin");
 
-  // 订阅 /wrf_wind
+  // Subscribe to /wrf_wind
   this->dataPtr->windSub =
     this->dataPtr->rosNode->create_subscription<geometry_msgs::msg::Vector3Stamped>(
       "/wrf_wind", 10,
@@ -177,12 +177,12 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
         this->dataPtr->haveWind = true;
       });
 
-  // 发布 /robot_gpsfix
+  // Publisher for /robot_gpsfix
   this->dataPtr->gpsPub =
     this->dataPtr->rosNode->create_publisher<sensor_msgs::msg::NavSatFix>(
       "/robot_gpsfix", 10);
 
-  // ROS spin 线程
+  // Dedicated ROS spin thread
   this->dataPtr->rosSpinThread =
     std::thread(
       [this]()
@@ -214,17 +214,17 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
 
   gz::sim::Link link(this->dataPtr->linkEntity);
 
-  // 使用 Link 的便捷接口获取世界位姿和速度（返回 std::optional）
+  // Use Link helpers to get world pose and velocities (std::optional)
   auto poseOpt = link.WorldPose(_ecm);
   auto velOpt = link.WorldLinearVelocity(_ecm);
   auto angVelOpt = link.WorldAngularVelocity(_ecm);
 
-  // 没有位姿则无法计算任何量，直接返回
+  // Without pose we cannot do anything
   if (!poseOpt)
     return;
 
   const auto &pose = *poseOpt;
-  // 速度相关用于计算阻力矩，没有的话就认为当前速度为 0，但仍然可以发布 GPS
+  // Velocities are only needed for drag; if missing we assume 0 but still publish GPS
   gz::math::Vector3d velWorld(0, 0, 0);
   if (velOpt)
     velWorld = *velOpt;
@@ -233,7 +233,7 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
   if (angVelOpt)
     angVelWorld = *angVelOpt;
 
-  // 当前风场（世界坐标）
+  // Current wind vector in world frame
   gz::math::Vector3d windWorld(0, 0, 0);
   {
     std::lock_guard<std::mutex> lock(this->dataPtr->windMutex);
@@ -241,7 +241,7 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
       windWorld = this->dataPtr->windWorld;
   }
 
-  // 相对风速（物体速度 - 风速）
+  // Relative wind velocity (body velocity minus wind)
   gz::math::Vector3d vRel = velWorld - windWorld;
   const double speed = vRel.Length();
 
@@ -256,7 +256,7 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
     force = -k * speed * vRel;
   }
 
-  // 转动阻力矩（简单二次阻尼）
+  // Rotational drag torque (simple quadratic damping)
   const double omegaMag = angVelWorld.Length();
   gz::math::Vector3d torque(0, 0, 0);
   if (omegaMag > 1e-3)
@@ -269,7 +269,7 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
     torque = -kR * omegaMag * angVelWorld;
   }
 
-  // 对力和力矩做安全裁剪，避免过大数值引发物理引擎/ODE 崩溃
+  // Clamp force / torque to safe limits to avoid extreme values crashing ODE/physics
   auto sanitizeVec = [](const gz::math::Vector3d &v, double maxMag) {
     gz::math::Vector3d out = v;
     if (!std::isfinite(out.X()) || !std::isfinite(out.Y()) || !std::isfinite(out.Z()))
@@ -289,21 +289,21 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
   force = sanitizeVec(force, this->dataPtr->maxForce);
   torque = sanitizeVec(torque, this->dataPtr->maxTorque);
 
-  // 把阻力作用到 link 上（世界坐标系下的力/矩）
+  // Apply drag force and torque to the link in world coordinates
   if (force != gz::math::Vector3d::Zero ||
       torque != gz::math::Vector3d::Zero)
   {
     link.AddWorldWrench(_ecm, force, torque);
   }
 
-  // 计算并发布 GPS（经纬度与高度）
+  // Compute and publish GPS (lat/lon/alt)
   if (this->dataPtr->gpsPub && this->dataPtr->rosNode)
   {
     const double earthRadius = 6378137.0;  // m
 
-    const auto &pos = pose.Pos();  // 世界坐标系位置 (x, y, z)，单位 m
+    const auto &pos = pose.Pos();  // World position (x, y, z), meters
 
-    // 假定：世界坐标 x 对应东向，y 对应北向，z 为高度（ENU）
+    // Assume world frame ENU: x east, y north, z up
     const double dEast = pos.X();
     const double dNorth = pos.Y();
     const double alt = this->dataPtr->refAlt + pos.Z();
@@ -320,7 +320,7 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
 
     sensor_msgs::msg::NavSatFix gpsMsg;
     gpsMsg.header.stamp = this->dataPtr->rosNode->now();
-    gpsMsg.header.frame_id = "world";  // 可根据需要修改
+    gpsMsg.header.frame_id = "world";  // Frame id can be adjusted as needed
 
     gpsMsg.latitude = latDeg;
     gpsMsg.longitude = lonDeg;

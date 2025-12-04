@@ -15,10 +15,11 @@
 namespace wrf_gz
 {
 /// Gazebo Harmonic System plugin.
-/// - 放在 <model> 标签内
-/// - 订阅 ROS2 话题 /wrf_wind (geometry_msgs::msg::Vector3Stamped)
-/// - 发布机器人当前经纬度和高度到 /robot_gpsfix (sensor_msgs::msg::NavSatFix)
-/// - 根据相对风速与角速度计算平动/转动阻力，并施加到模型上
+/// - Attach inside a <model> tag
+/// - Subscribe to ROS 2 topic /wrf_wind (geometry_msgs::msg::Vector3Stamped)
+/// - Publish current robot latitude / longitude / altitude to /robot_gpsfix (sensor_msgs::msg::NavSatFix)
+/// - Compute translational and rotational aerodynamic drag based on relative wind and angular velocity,
+///   and apply the resulting wrench to the model
 class WindGzPlugin
   : public gz::sim::System,
     public gz::sim::ISystemConfigure,
@@ -45,10 +46,9 @@ private:
 
 }  // namespace wrf_gz
 
-// 注册为 Gazebo System 插件
+// Register as a Gazebo System plugin
 GZ_ADD_PLUGIN(
   wrf_gz::WindGzPlugin,
   gz::sim::System,
   wrf_gz::WindGzPlugin::ISystemConfigure,
   wrf_gz::WindGzPlugin::ISystemPreUpdate)
-

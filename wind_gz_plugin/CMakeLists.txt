@@ -35,11 +35,11 @@ ament_target_dependencies(WindGzPlugin
 )
 
 install(TARGETS WindGzPlugin
-  # 直接安装到 Gazebo Harmonic(gz-sim8) 的系统插件目录下，
-  # 这样无需额外设置 GZ_SIM_SYSTEM_PLUGIN_PATH。
+  # Install directly into the Gazebo Harmonic (gz-sim8) system plugin directory,
+  # so GZ_SIM_SYSTEM_PLUGIN_PATH does not need to be set manually.
   #
-  # 对于 Ubuntu x86_64 + 官方 apt 安装的 gz-sim8，
-  # 系统插件路径为：
+  # On Ubuntu x86_64 with gz-sim8 from the official apt repository,
+  # the system plugin path is:
   #   /usr/lib/x86_64-linux-gnu/gz-sim-8/plugins
   LIBRARY DESTINATION /usr/lib/x86_64-linux-gnu/gz-sim-8/plugins
 )
