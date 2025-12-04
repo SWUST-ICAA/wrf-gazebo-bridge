@@ -6,7 +6,7 @@
 ![ROS 2](https://img.shields.io/badge/ROS%202-Humble-blue?logo=ros)
 ![Gazebo](https://img.shields.io/badge/Gazebo-Harmonic%20(gz--sim8)-purple?logo=gazebo)
 ![Group](https://img.shields.io/badge/Group-SWUST--ICAA-success)
-![License](https://img.shields.io/badge/License-MIT-informational)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
 WRF–Gazebo bridge for simulating realistic, time-varying 3D wind fields in ROS 2 and Gazebo Harmonic.  
 It reads atmospheric wind from WRF `wrfout` NetCDF files, interpolates in space and time at the robot’s current latitude / longitude / altitude, publishes `/wrf_wind` in ROS 2, and applies the resulting aerodynamic forces and torques to a Gazebo model.
@@ -256,4 +256,3 @@ The script prints:
 ---
 
 If you find this repository useful, please consider giving it a star to support our work. ⭐
-
