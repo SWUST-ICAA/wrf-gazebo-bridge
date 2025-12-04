@@ -1,12 +1,27 @@
 import math
-from typing import Optional, Tuple
+import os
+from typing import Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.time import Time
 
 from geometry_msgs.msg import Vector3Stamped
 from sensor_msgs.msg import NavSatFix
+
+try:
+    from ament_index_python.packages import (
+        get_package_share_directory,
+        PackageNotFoundError,
+    )
+except ImportError:  # pragma: no cover - at runtime we will log if missing
+    get_package_share_directory = None  # type: ignore[assignment]
+
+try:
+    import yaml  # type: ignore
+except ImportError:  # pragma: no cover - at runtime we will log if missing
+    yaml = None  # type: ignore[assignment]
 
 
 class WrfWindPublisher(Node):
@@ -15,16 +30,26 @@ class WrfWindPublisher(Node):
     def __init__(self) -> None:
         super().__init__("wrf_wind_publisher")
 
+        # Base defaults used when no overrides (CLI or YAML) are provided.
+        defaults: Dict[str, object] = {
+            "wrf_file_path": "wrfout_data/wrfout_d01_2022-07-01_00_00_00",
+            "position_topic": "/gps/fix",
+            "wind_topic": "/wrf_wind",
+            "use_3d_wind": True,
+            "time_interpolation": "linear",
+            "default_wind_x": 0.0,
+            "default_wind_y": 0.0,
+            "default_wind_z": 0.0,
+            "time_offset_seconds": 0.0,
+        }
+
         # Declare parameters (configurable via YAML)
-        self.declare_parameter("wrf_file_path", "wrfout_data/wrfout_d01_2022-07-01_00_00_00")
-        self.declare_parameter("position_topic", "/gps/fix")
-        self.declare_parameter("wind_topic", "/wrf_wind")
-        self.declare_parameter("use_3d_wind", True)
-        self.declare_parameter("time_interpolation", "linear")  # or "nearest"
-        self.declare_parameter("default_wind_x", 0.0)
-        self.declare_parameter("default_wind_y", 0.0)
-        self.declare_parameter("default_wind_z", 0.0)
-        self.declare_parameter("time_offset_seconds", 0.0)
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
+
+        # Apply default YAML config from the installed package, if available.
+        # Priority: CLI overrides > YAML file > hard-coded defaults.
+        self._apply_default_yaml(defaults)
 
         wrf_file_path = self.get_parameter("wrf_file_path").get_parameter_value().string_value
         position_topic = self.get_parameter("position_topic").get_parameter_value().string_value
@@ -79,6 +104,84 @@ class WrfWindPublisher(Node):
             f"WRF wind publisher started. wrf file: {wrf_file_path}, "
             f"subscribing to position topic: {position_topic}, publishing wind topic: {wind_topic}"
         )
+
+    def _apply_default_yaml(self, defaults: Dict[str, object]) -> None:
+        """Load default parameters from installed YAML if present.
+
+        This is only used when launching via ``ros2 run wrf_gazebo_bridge wrf_wind_publisher``
+        without an explicit ``--params-file``. The precedence is:
+
+        1. CLI / launch file overrides (highest)
+        2. YAML file ``config/wrf_wind_config.yaml`` from this package
+        3. Hard-coded defaults in this file (lowest)
+        """
+        # If ament_index or yaml is not available, just skip.
+        if get_package_share_directory is None or yaml is None:
+            return
+
+        try:
+            share_dir = get_package_share_directory("wrf_gazebo_bridge")
+        except PackageNotFoundError:  # pragma: no cover - runtime only
+            self.get_logger().warn(
+                "Package share directory for 'wrf_gazebo_bridge' not found; "
+                "skipping default YAML parameter loading."
+            )
+            return
+
+        yaml_path = os.path.join(share_dir, "config", "wrf_wind_config.yaml")
+        if not os.path.isfile(yaml_path):
+            # Silent skip; this is not an error if the file is not installed.
+            return
+
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as exc:  # pragma: no cover - runtime only
+            self.get_logger().warn(
+                f"Failed to load default parameter file '{yaml_path}': {exc}"
+            )
+            return
+
+        # Try to locate the parameters section. The canonical structure is:
+        # wrf_wind_publisher:
+        #   ros__parameters:
+        #     ...
+        params_section = {}
+        node_name = self.get_name()
+        if node_name in data and isinstance(data[node_name], dict):
+            params_section = data[node_name].get("ros__parameters", {}) or {}
+        elif "wrf_wind_publisher" in data and isinstance(
+            data["wrf_wind_publisher"], dict
+        ):
+            params_section = data["wrf_wind_publisher"].get("ros__parameters", {}) or {}
+        elif "ros__parameters" in data and isinstance(data["ros__parameters"], dict):
+            params_section = data["ros__parameters"]
+
+        if not params_section:
+            return
+
+        params_to_set = []
+        for name, yaml_value in params_section.items():
+            # Only consider parameters that we know about.
+            if name not in defaults:
+                continue
+
+            # If current value differs from the hard-coded default,
+            # assume it was overridden via CLI/launch and do not touch it.
+            current_param = self.get_parameter(name)
+            current_value = current_param.value
+            default_value = defaults[name]
+            if current_value != default_value:
+                continue
+
+            params_to_set.append(Parameter(name=name, value=yaml_value))
+
+        if params_to_set:
+            self.set_parameters(params_to_set)
+            self.get_logger().info(
+                f"Loaded default parameters from '{yaml_path}' for: "
+                f"{', '.join(p.name for p in params_to_set)}"
+            )
 
     def _load_static_fields(self) -> None:
         """Load WRF grids (time, lat/lon, heights, wind fields) into memory."""
