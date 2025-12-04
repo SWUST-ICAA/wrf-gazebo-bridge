@@ -112,21 +112,46 @@ Inside the `<model>` that should be affected by wind:
 
 ```xml
 <plugin filename="libWindGzPlugin.so" name="wrf_gz::WindGzPlugin">
-  <!-- Link where the aerodynamic wrench is applied -->
+  <!-- Link where the aerodynamic wrench is applied.
+       Required. Typical value is the main body link, e.g. "base_link". -->
   <link_name>base_link</link_name>
 
-  <!-- Geodetic reference point (lat / lon / alt) for the world origin -->
+  <!-- Geodetic reference point (lat / lon / alt) for the world origin.
+       Required. This should match the origin used for your world
+       (e.g. the WRF domain center). -->
   <reference_latitude>30.0</reference_latitude>
   <reference_longitude>120.0</reference_longitude>
   <reference_altitude>0.0</reference_altitude>
 
-  <!-- Air properties and simple drag coefficients (tune for your model) -->
-  <fluid_density>1.225</fluid_density>           <!-- Air density kg/m^3 -->
-  <reference_area>1.0</reference_area>           <!-- Reference area m^2 -->
-  <linear_drag_coefficient>1.0</linear_drag_coefficient>
-  <angular_drag_coefficient>1.0</angular_drag_coefficient>
+  <!-- Air properties and simple drag coefficients.
+       All of these are optional; if not provided, automatic estimation
+       or default values are used. -->
 
-  <!-- Optional safety limits for the applied wrench -->
+  <!-- Constant air density [kg/m^3].
+       If omitted, the plugin approximates ISA density at reference_altitude. -->
+  <!-- <fluid_density>1.225</fluid_density> -->
+
+  <!-- Aerodynamic reference area [m^2].
+       If omitted, the plugin estimates a reasonable area from the collision
+       geometry of link_name:
+       - It prefers the sum of rotor disk areas (spheres / cylinders),
+       - Otherwise uses an approximate area from box shapes,
+       - Falls back to a small default if no geometry is available. -->
+  <!-- <reference_area>1.0</reference_area> -->
+
+  <!-- Translational drag coefficient (dimensionless).
+       If omitted, a default value of 1.0 is used, suitable for bluff bodies /
+       multirotor fuselages. -->
+  <!-- <linear_drag_coefficient>1.0</linear_drag_coefficient> -->
+
+  <!-- Rotational drag coefficient (dimensionless).
+       If omitted, a default value of 0.5 is used, providing moderate
+       angular damping. -->
+  <!-- <angular_drag_coefficient>1.0</angular_drag_coefficient> -->
+
+  <!-- Optional safety limits for the applied wrench.
+       If omitted, the plugin uses internal defaults (max_force = 1e3 N,
+       max_torque = 1e3 N·m) to protect the physics engine. -->
   <max_force>200.0</max_force>
   <max_torque>50.0</max_torque>
 </plugin>
