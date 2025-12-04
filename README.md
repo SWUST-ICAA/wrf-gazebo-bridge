@@ -102,10 +102,15 @@ Notes:
 Run the node:
 
 ```bash
-ros2 run wrf_gazebo_bridge wrf_wind_publisher \
-  --ros-args \
-  --params-file $(ros2 pkg prefix wrf_gazebo_bridge)/share/wrf_gazebo_bridge/config/wrf_wind_config.yaml
+ros2 run wrf_gazebo_bridge wrf_wind_publisher
 ```
+
+By default, the node will try to load parameters from the installed
+`config/wrf_wind_config.yaml` in the `wrf_gazebo_bridge` share directory.
+You can still override any parameter via:
+
+- CLI: `--ros-args -p wrf_file_path:=/some/other/file.nc`  
+- Or a custom params file: `--ros-args --params-file your_custom.yaml`
 
 ---
 
