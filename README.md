@@ -181,6 +181,34 @@ When the model moves inside the WRF domain:
 
 ---
 
+## Using Only the Aerodynamics Plugin (Without WRF)
+
+You can also use the Gazebo plugin as a **generic aerodynamic drag plugin** driven by a ROS wind topic, without using the WRF data or the `wrf_wind_publisher` node.
+
+- If you only need aerodynamic forces / torques:
+  1. Build and install the plugin as described above.
+  2. Add the `<plugin>` block to your model SDF.
+  3. Do **not** run `wrf_wind_publisher` if you have your own wind source.
+
+- To drive the plugin with your own wind field:
+  - Publish messages of type `geometry_msgs/msg/Vector3Stamped` on the `/wrf_wind` topic:
+
+    ```bash
+    ros2 topic pub /wrf_wind geometry_msgs/msg/Vector3Stamped "
+    header:
+      frame_id: 'world'
+    vector:
+      x: 5.0
+      y: 0.0
+      z: 0.0
+    "
+    ```
+
+  - The `vector` field is interpreted as the wind velocity in the world frame (m/s).
+  - The plugin will still compute `/robot_gpsfix` based on the model pose, but you are free to ignore that topic if you do not use WRF.
+
+---
+
 ## Troubleshooting
 
 - **Gazebo cannot find the plugin**
