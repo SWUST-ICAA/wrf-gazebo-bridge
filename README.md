@@ -139,15 +139,29 @@ Inside the `<model>` that should be affected by wind:
        - Falls back to a small default if no geometry is available. -->
   <!-- <reference_area>1.0</reference_area> -->
 
-  <!-- Translational drag coefficient (dimensionless).
+  <!-- Translational drag coefficient (dimensionless, isotropic).
        If omitted, a default value of 1.0 is used, suitable for bluff bodies /
-       multirotor fuselages. -->
+       multirotor fuselages. This value is also used to initialize the
+       body-frame per-axis coefficients below when they are not provided. -->
   <!-- <linear_drag_coefficient>1.0</linear_drag_coefficient> -->
 
-  <!-- Rotational drag coefficient (dimensionless).
+  <!-- Rotational drag coefficient (dimensionless, isotropic).
        If omitted, a default value of 0.5 is used, providing moderate
-       angular damping. -->
+       angular damping. This value is also used to initialize the body-frame
+       per-axis rotational coefficients below when they are not provided. -->
   <!-- <angular_drag_coefficient>1.0</angular_drag_coefficient> -->
+
+  <!-- Body-frame per-axis translational drag coefficients (dimensionless).
+       Optional. If omitted, each axis falls back to linear_drag_coefficient. -->
+  <!-- <linear_drag_coefficient_x>1.0</linear_drag_coefficient_x> -->
+  <!-- <linear_drag_coefficient_y>1.0</linear_drag_coefficient_y> -->
+  <!-- <linear_drag_coefficient_z>1.0</linear_drag_coefficient_z> -->
+
+  <!-- Body-frame per-axis rotational drag coefficients (dimensionless).
+       Optional. If omitted, each axis falls back to angular_drag_coefficient. -->
+  <!-- <angular_drag_coefficient_x>0.5</angular_drag_coefficient_x> -->
+  <!-- <angular_drag_coefficient_y>0.5</angular_drag_coefficient_y> -->
+  <!-- <angular_drag_coefficient_z>0.5</angular_drag_coefficient_z> -->
 
   <!-- Optional safety limits for the applied wrench.
        If omitted, the plugin uses internal defaults (max_force = 1e3 N,
