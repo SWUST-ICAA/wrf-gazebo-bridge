@@ -12,11 +12,17 @@
 #include <gz/sim/components/Pose.hh>
 #include <gz/sim/components/LinearVelocity.hh>
 #include <gz/sim/components/AngularVelocity.hh>
+#include <gz/sim/components/Geometry.hh>
 
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/nav_sat_status.hpp>
+
+#include <sdf/Box.hh>
+#include <sdf/Cylinder.hh>
+#include <sdf/Geometry.hh>
+#include <sdf/Sphere.hh>
 
 using namespace std::chrono_literals;
 
@@ -41,6 +47,9 @@ struct WindGzPlugin::Data
   std::mutex windMutex;
   gz::math::Vector3d windWorld{0, 0, 0};
   bool haveWind{false};
+  rclcpp::Time lastWindStamp{};
+  // If no wind message has been received within this timeout, treat as "no wind"
+  double windTimeoutSec{1.0};
 
   // Reference geodetic coordinates (lat/lon/alt corresponding to world origin)
   double refLatDeg{0.0};
@@ -112,21 +121,80 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
     this->dataPtr->refAlt = sdf->Get<double>("reference_altitude");
   }
 
+  // Drag-related parameters
+  //
+  // If the SDF file explicitly specifies these elements, use the provided
+  // values. Otherwise, fall back to automatic estimation / sensible defaults
+  // aimed at multirotor-style vehicles.
   if (sdf->HasElement("fluid_density"))
   {
+    // User-provided constant air density
     this->dataPtr->fluidDensity = sdf->Get<double>("fluid_density");
   }
+  else
+  {
+    // Approximate ISA density at the reference altitude (troposphere model).
+    // This keeps density realistic without requiring manual tuning.
+    const double h = this->dataPtr->refAlt;           // m
+    const double rho0 = 1.225;                        // kg/m^3 at sea level
+    const double T0 = 288.15;                         // K
+    const double L = 0.0065;                          // K/m
+    const double g = 9.80665;                         // m/s^2
+    const double R = 287.058;                         // J/(kg·K)
+
+    if (h > 0.0 && h < 11000.0)
+    {
+      const double term = 1.0 - L * h / T0;
+      if (term > 0.0)
+      {
+        const double exponent = g / (R * L) - 1.0;
+        this->dataPtr->fluidDensity = rho0 * std::pow(term, exponent);
+      }
+      else
+      {
+        this->dataPtr->fluidDensity = rho0 * 0.5;
+      }
+    }
+    else
+    {
+      // At very low or very high altitudes, just keep the sea level value.
+      this->dataPtr->fluidDensity = rho0;
+    }
+  }
+
   if (sdf->HasElement("reference_area"))
   {
+    // Respect explicitly configured reference area.
     this->dataPtr->referenceArea = sdf->Get<double>("reference_area");
   }
+  else
+  {
+    // Try to infer a reasonable reference area from the link's collision
+    // geometry. For multirotors this will effectively approximate the sum
+    // of rotor disk areas when possible.
+    this->dataPtr->referenceArea = this->EstimateReferenceArea(_ecm);
+  }
+
   if (sdf->HasElement("linear_drag_coefficient"))
   {
     this->dataPtr->linearCd = sdf->Get<double>("linear_drag_coefficient");
   }
+  else
+  {
+    // Default translational drag coefficient suitable for a bluff body /
+    // multirotor fuselage. Users can override per model in SDF.
+    this->dataPtr->linearCd = 1.0;
+  }
+
   if (sdf->HasElement("angular_drag_coefficient"))
   {
     this->dataPtr->angularCd = sdf->Get<double>("angular_drag_coefficient");
+  }
+  else
+  {
+    // Default rotational damping coefficient; smaller than translational
+    // drag to avoid overly strong attitude damping.
+    this->dataPtr->angularCd = 0.5;
   }
 
   // Optional: limit max force / torque to avoid divergence due to extreme coefficients
@@ -175,6 +243,10 @@ void WindGzPlugin::Configure(const gz::sim::Entity &_entity,
         std::lock_guard<std::mutex> lock(this->dataPtr->windMutex);
         this->dataPtr->windWorld.Set(msg->vector.x, msg->vector.y, msg->vector.z);
         this->dataPtr->haveWind = true;
+        if (this->dataPtr->rosNode)
+        {
+          this->dataPtr->lastWindStamp = this->dataPtr->rosNode->now();
+        }
       });
 
   // Publisher for /robot_gpsfix
@@ -233,26 +305,28 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
   if (angVelOpt)
     angVelWorld = *angVelOpt;
 
-  // Current wind vector in world frame and whether we have a valid wind input
+  // Current wind vector in world frame and whether we have a recent wind input
   gz::math::Vector3d windWorld(0, 0, 0);
-  bool haveWindLocal = false;
+  bool windActive = false;
   {
     std::lock_guard<std::mutex> lock(this->dataPtr->windMutex);
-    if (this->dataPtr->haveWind)
+    if (this->dataPtr->haveWind && this->dataPtr->rosNode)
     {
-      windWorld = this->dataPtr->windWorld;
-      haveWindLocal = true;
+      const auto now = this->dataPtr->rosNode->now();
+      double dt = 0.0;
+      if (now > this->dataPtr->lastWindStamp)
+      {
+        dt = (now - this->dataPtr->lastWindStamp).seconds();
+      }
+
+      // Only treat wind as active if we have received a message recently.
+      if (dt <= this->dataPtr->windTimeoutSec)
+      {
+        windWorld = this->dataPtr->windWorld;
+        windActive = true;
+      }
     }
   }
-
-  // Check whether there is any active publisher on /wrf_wind.
-  // If there is no publisher, or we have never received a wind message,
-  // the plugin will not apply any aerodynamic forces/torques (acts as "no wind").
-  size_t pubCount = 0;
-  if (this->dataPtr->windSub)
-    pubCount = this->dataPtr->windSub->get_publisher_count();
-
-  const bool windActive = (pubCount > 0) && haveWindLocal;
 
   gz::math::Vector3d force(0, 0, 0);
   gz::math::Vector3d torque(0, 0, 0);
@@ -351,6 +425,118 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
 
     this->dataPtr->gpsPub->publish(gpsMsg);
   }
+}
+
+//////////////////////////////////////////////////
+double WindGzPlugin::EstimateReferenceArea(
+  gz::sim::EntityComponentManager &_ecm) const
+{
+  // Look up the link entity for estimation. This may be called before
+  // Configure() stores linkEntity, so we query the model directly here.
+  auto linkEntity =
+    this->dataPtr->model.LinkByName(_ecm, this->dataPtr->linkName);
+
+  if (linkEntity == gz::sim::kNullEntity)
+  {
+    return this->dataPtr->referenceArea;
+  }
+
+  gz::sim::Link link(linkEntity);
+  const auto collisions = link.Collisions(_ecm);
+
+  if (collisions.empty())
+  {
+    return this->dataPtr->referenceArea;
+  }
+
+  double rotorArea = 0.0;
+  double genericArea = 0.0;
+
+  // Minimum radius to consider a sphere / cylinder as a rotor disk (meters).
+  const double rotorRadiusThreshold = 0.05;
+
+  for (const auto &collEntity : collisions)
+  {
+    auto geomComp =
+      _ecm.Component<gz::sim::components::Geometry>(collEntity);
+
+    if (!geomComp)
+      continue;
+
+    const sdf::Geometry &geom = geomComp->Data();
+
+    switch (geom.Type())
+    {
+      case sdf::GeometryType::SPHERE:
+      {
+        auto sphere = geom.SphereShape();
+        if (!sphere)
+          break;
+        const double r = sphere->Radius();
+        if (r <= 0.0)
+          break;
+        const double area = M_PI * r * r;
+
+        if (r > rotorRadiusThreshold)
+          rotorArea += area;
+        else
+          genericArea += area;
+        break;
+      }
+
+      case sdf::GeometryType::CYLINDER:
+      {
+        auto cyl = geom.CylinderShape();
+        if (!cyl)
+          break;
+        const double r = cyl->Radius();
+        if (r <= 0.0)
+          break;
+        const double area = M_PI * r * r;
+
+        if (r > rotorRadiusThreshold)
+          rotorArea += area;
+        else
+          genericArea += area;
+        break;
+      }
+
+      case sdf::GeometryType::BOX:
+      {
+        auto box = geom.BoxShape();
+        if (!box)
+          break;
+        const auto size = box->Size();
+
+        // Approximate average projected area over principal planes:
+        // XY, XZ, YZ.
+        const double xy = size.X() * size.Y();
+        const double xz = size.X() * size.Z();
+        const double yz = size.Y() * size.Z();
+        const double area = (xy + xz + yz) / 3.0;
+
+        genericArea += area;
+        break;
+      }
+
+      default:
+        // Other geometry types (mesh, plane, etc.) are ignored here.
+        break;
+    }
+  }
+
+  if (rotorArea > 0.0)
+  {
+    return rotorArea;
+  }
+
+  if (genericArea > 0.0)
+  {
+    return genericArea;
+  }
+
+  // As a last resort, keep the existing default area.
+  return this->dataPtr->referenceArea;
 }
 
 }  // namespace wrf_gz

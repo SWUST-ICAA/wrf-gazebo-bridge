@@ -40,6 +40,14 @@ public:
                  gz::sim::EntityComponentManager &_ecm) override;
 
 private:
+  /// Estimate a reasonable aerodynamic reference area for the configured link.
+  /// If the SDF explicitly provides <reference_area>, that value is used and
+  /// this helper is not called. The estimation is intentionally simple:
+  /// - Prefer the sum of rotor disk areas (cylinder / sphere collisions)
+  /// - Otherwise, fall back to an approximate area based on box collisions
+  /// - If no usable geometry is found, return a small default area
+  double EstimateReferenceArea(gz::sim::EntityComponentManager &_ecm) const;
+
   struct Data;
   std::unique_ptr<Data> dataPtr;
 };
