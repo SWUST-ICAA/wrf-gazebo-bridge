@@ -233,61 +233,78 @@ void WindGzPlugin::PreUpdate(const gz::sim::UpdateInfo &_info,
   if (angVelOpt)
     angVelWorld = *angVelOpt;
 
-  // Current wind vector in world frame
+  // Current wind vector in world frame and whether we have a valid wind input
   gz::math::Vector3d windWorld(0, 0, 0);
+  bool haveWindLocal = false;
   {
     std::lock_guard<std::mutex> lock(this->dataPtr->windMutex);
     if (this->dataPtr->haveWind)
+    {
       windWorld = this->dataPtr->windWorld;
+      haveWindLocal = true;
+    }
   }
 
-  // Relative wind velocity (body velocity minus wind)
-  gz::math::Vector3d vRel = velWorld - windWorld;
-  const double speed = vRel.Length();
+  // Check whether there is any active publisher on /wrf_wind.
+  // If there is no publisher, or we have never received a wind message,
+  // the plugin will not apply any aerodynamic forces/torques (acts as "no wind").
+  size_t pubCount = 0;
+  if (this->dataPtr->windSub)
+    pubCount = this->dataPtr->windSub->get_publisher_count();
+
+  const bool windActive = (pubCount > 0) && haveWindLocal;
 
   gz::math::Vector3d force(0, 0, 0);
-  if (speed > 1e-3)
-  {
-    // F = -0.5 * rho * Cd * A * |v_rel| * v_rel
-    const double k =
-      0.5 * this->dataPtr->fluidDensity *
-      this->dataPtr->linearCd *
-      this->dataPtr->referenceArea;
-    force = -k * speed * vRel;
-  }
-
-  // Rotational drag torque (simple quadratic damping)
-  const double omegaMag = angVelWorld.Length();
   gz::math::Vector3d torque(0, 0, 0);
-  if (omegaMag > 1e-3)
+
+  if (windActive)
   {
-    // M = -0.5 * rho * Cd_rot * A_ref * |omega| * omega
-    const double kR =
-      0.5 * this->dataPtr->fluidDensity *
-      this->dataPtr->angularCd *
-      this->dataPtr->referenceArea;
-    torque = -kR * omegaMag * angVelWorld;
-  }
+    // Relative wind velocity (body velocity minus wind)
+    gz::math::Vector3d vRel = velWorld - windWorld;
+    const double speed = vRel.Length();
 
-  // Clamp force / torque to safe limits to avoid extreme values crashing ODE/physics
-  auto sanitizeVec = [](const gz::math::Vector3d &v, double maxMag) {
-    gz::math::Vector3d out = v;
-    if (!std::isfinite(out.X()) || !std::isfinite(out.Y()) || !std::isfinite(out.Z()))
-      return gz::math::Vector3d::Zero;
-
-    if (maxMag > 0.0)
+    if (speed > 1e-3)
     {
-      const double mag = out.Length();
-      if (mag > maxMag && mag > 1e-6)
-      {
-        out *= (maxMag / mag);
-      }
+      // F = -0.5 * rho * Cd * A * |v_rel| * v_rel
+      const double k =
+        0.5 * this->dataPtr->fluidDensity *
+        this->dataPtr->linearCd *
+        this->dataPtr->referenceArea;
+      force = -k * speed * vRel;
     }
-    return out;
-  };
 
-  force = sanitizeVec(force, this->dataPtr->maxForce);
-  torque = sanitizeVec(torque, this->dataPtr->maxTorque);
+    // Rotational drag torque (simple quadratic damping)
+    const double omegaMag = angVelWorld.Length();
+    if (omegaMag > 1e-3)
+    {
+      // M = -0.5 * rho * Cd_rot * A_ref * |omega| * omega
+      const double kR =
+        0.5 * this->dataPtr->fluidDensity *
+        this->dataPtr->angularCd *
+        this->dataPtr->referenceArea;
+      torque = -kR * omegaMag * angVelWorld;
+    }
+
+    // Clamp force / torque to safe limits to avoid extreme values crashing ODE/physics
+    auto sanitizeVec = [](const gz::math::Vector3d &v, double maxMag) {
+      gz::math::Vector3d out = v;
+      if (!std::isfinite(out.X()) || !std::isfinite(out.Y()) || !std::isfinite(out.Z()))
+        return gz::math::Vector3d::Zero;
+
+      if (maxMag > 0.0)
+      {
+        const double mag = out.Length();
+        if (mag > maxMag && mag > 1e-6)
+        {
+          out *= (maxMag / mag);
+        }
+      }
+      return out;
+    };
+
+    force = sanitizeVec(force, this->dataPtr->maxForce);
+    torque = sanitizeVec(torque, this->dataPtr->maxTorque);
+  }
 
   // Apply drag force and torque to the link in world coordinates
   if (force != gz::math::Vector3d::Zero ||
